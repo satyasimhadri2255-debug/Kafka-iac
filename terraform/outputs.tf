@@ -1,11 +1,11 @@
 output "bootstrap_servers" {
-  description = "Kafka bootstrap servers (reachable from inside the VPC)."
-  value       = local.bootstrap
+  description = "Kafka bootstrap server (reachable from inside the VPC)."
+  value       = "${aws_instance.kafka.private_ip}:9092"
 }
 
-output "broker_instance_ids" {
-  description = "EC2 instance IDs, for `aws ssm start-session --target <id>`."
-  value       = aws_instance.broker[*].id
+output "instance_id" {
+  description = "EC2 instance ID, for `aws ssm start-session --target <id>`."
+  value       = aws_instance.kafka.id
 }
 
 output "cluster_id" {
@@ -14,5 +14,5 @@ output "cluster_id" {
 }
 
 output "vpc_id" {
-  value = aws_vpc.this.id
+  value = aws_vpc.sri.id
 }

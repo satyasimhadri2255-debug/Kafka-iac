@@ -1,17 +1,18 @@
 #!/bin/bash
-# Installs and starts one Apache Kafka node in KRaft mode (combined broker + controller).
+# Installs and starts a single-node Apache Kafka cluster in KRaft mode (broker + controller on one host).
 # Placeholders (__NAME__) are replaced by the CDK stack before the script is used as user data.
 set -euxo pipefail
 
 KAFKA_VERSION="__KAFKA_VERSION__"
 SCALA_VERSION="2.13"
-NODE_ID="__NODE_ID__"
 CLUSTER_ID="__CLUSTER_ID__"
-QUORUM_VOTERS="__QUORUM_VOTERS__"
-ADVERTISED_HOST="__ADVERTISED_HOST__"
 HEAP_SIZE="__HEAP_SIZE__"
 
 KAFKA_DIST="kafka_$SCALA_VERSION-$KAFKA_VERSION"
+
+# Private IP from instance metadata (IMDSv2); clients in the VPC connect to this address.
+IMDS_TOKEN=$(curl -fsS -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+PRIVATE_IP=$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
 
 # Kafka 4.x brokers require Java 17+
 dnf install -y java-21-amazon-corretto-headless shadow-utils tar gzip
@@ -27,24 +28,25 @@ ln -sfn "/opt/$KAFKA_DIST" /opt/kafka
 
 mkdir -p /etc/kafka /var/lib/kafka/data /var/log/kafka
 
+# Single node: every replication factor / ISR setting must be 1.
 cat > /etc/kafka/server.properties <<EOF
 process.roles=broker,controller
-node.id=$NODE_ID
-controller.quorum.voters=$QUORUM_VOTERS
+node.id=1
+controller.quorum.voters=1@localhost:9093
 
-listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-advertised.listeners=PLAINTEXT://$ADVERTISED_HOST:9092
+listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://localhost:9093
+advertised.listeners=PLAINTEXT://$PRIVATE_IP:9092
 listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
 controller.listener.names=CONTROLLER
 inter.broker.listener.name=PLAINTEXT
 
 log.dirs=/var/lib/kafka/data
 num.partitions=3
-default.replication.factor=3
-min.insync.replicas=2
-offsets.topic.replication.factor=3
-transaction.state.log.replication.factor=3
-transaction.state.log.min.isr=2
+default.replication.factor=1
+min.insync.replicas=1
+offsets.topic.replication.factor=1
+transaction.state.log.replication.factor=1
+transaction.state.log.min.isr=1
 auto.create.topics.enable=false
 log.retention.hours=168
 EOF

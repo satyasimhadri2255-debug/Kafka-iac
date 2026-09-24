@@ -14,7 +14,8 @@ terraform {
 }
 
 provider "aws" {
-  region = var.region
+  # Fixed because the hardcoded AMI in kafka.tf only exists in this region.
+  region = "us-east-2"
 
   default_tags {
     tags = {

@@ -1,5 +1,4 @@
-region        = "us-east-1"
 name          = "kafka-tf"
-instance_type = "t3.medium"
+instance_type = "c7i-flex.large"
 kafka_version = "4.3.1"
 # client_cidrs = ["203.0.113.10/32"]

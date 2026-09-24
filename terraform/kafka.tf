@@ -1,25 +1,14 @@
-data "aws_ssm_parameter" "al2023_ami" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
-}
-
 # KRaft cluster ID: 16 random bytes, base64url without padding (22 chars).
 resource "random_id" "cluster_id" {
   byte_length = 16
 }
 
-locals {
-  # Fixed private IPs (x.x.N.10) so the static controller quorum is known before launch.
-  broker_ips    = [for s in aws_subnet.public : cidrhost(s.cidr_block, 10)]
-  quorum_voters = join(",", [for i, ip in local.broker_ips : "${i + 1}@${ip}:9093"])
-  bootstrap     = join(",", [for ip in local.broker_ips : "${ip}:9092"])
-}
-
 resource "aws_security_group" "kafka" {
-  name        = "${var.name}-brokers"
-  description = "Kafka brokers and KRaft controllers"
-  vpc_id      = aws_vpc.this.id
+  name        = "${var.name}-kafka"
+  description = "Single-node Kafka (broker + KRaft controller)"
+  vpc_id      = aws_vpc.sri.id
 
-  tags = { Name = "${var.name}-brokers" }
+  tags = { Name = "${var.name}-kafka" }
 }
 
 resource "aws_vpc_security_group_ingress_rule" "client_vpc" {
@@ -42,15 +31,6 @@ resource "aws_vpc_security_group_ingress_rule" "client_extra" {
   cidr_ipv4         = each.value
 }
 
-resource "aws_vpc_security_group_ingress_rule" "controller" {
-  security_group_id            = aws_security_group.kafka.id
-  description                  = "KRaft controller quorum between nodes"
-  ip_protocol                  = "tcp"
-  from_port                    = 9093
-  to_port                      = 9093
-  referenced_security_group_id = aws_security_group.kafka.id
-}
-
 resource "aws_vpc_security_group_egress_rule" "all" {
   security_group_id = aws_security_group.kafka.id
   description       = "Outbound for package and Kafka downloads, SSM"
@@ -58,9 +38,9 @@ resource "aws_vpc_security_group_egress_rule" "all" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-# Instances are reached with SSM Session Manager, so there is no SSH key or port 22.
+# The instance is reached with SSM Session Manager, so there is no SSH key or port 22.
 resource "aws_iam_role" "kafka" {
-  name = "${var.name}-broker-role"
+  name = "${var.name}-kafka-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -78,27 +58,22 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 }
 
 resource "aws_iam_instance_profile" "kafka" {
-  name = "${var.name}-broker-profile"
+  name = "${var.name}-kafka-profile"
   role = aws_iam_role.kafka.name
 }
 
-resource "aws_instance" "broker" {
-  count = var.broker_count
-
-  ami                    = data.aws_ssm_parameter.al2023_ami.value
+resource "aws_instance" "kafka" {
+  # Amazon Linux 2023 x86_64 (al2023-ami-2023.12.20260918.0), us-east-2 only.
+  ami                    = "ami-08be4b1b8afa29958"
   instance_type          = var.instance_type
-  subnet_id              = aws_subnet.public[count.index].id
-  private_ip             = local.broker_ips[count.index]
+  subnet_id              = aws_subnet.satya.id
   vpc_security_group_ids = [aws_security_group.kafka.id]
   iam_instance_profile   = aws_iam_instance_profile.kafka.name
 
   user_data = templatefile("${path.module}/templates/bootstrap.sh.tftpl", {
-    kafka_version   = var.kafka_version
-    node_id         = count.index + 1
-    cluster_id      = random_id.cluster_id.b64_url
-    quorum_voters   = local.quorum_voters
-    advertised_host = local.broker_ips[count.index]
-    heap_size       = var.heap_size
+    kafka_version = var.kafka_version
+    cluster_id    = random_id.cluster_id.b64_url
+    heap_size     = var.heap_size
   })
   user_data_replace_on_change = true
 
@@ -112,13 +87,8 @@ resource "aws_instance" "broker" {
     encrypted   = true
   }
 
-  # A newer AMI must not silently replace a broker and wipe its data.
-  lifecycle {
-    ignore_changes = [ami]
-  }
-
   # The bootstrap script downloads Kafka on first boot, so the internet route must exist.
-  depends_on = [aws_route_table_association.public]
+  depends_on = [aws_route_table_association.satya]
 
-  tags = { Name = "${var.name}-broker-${count.index + 1}" }
+  tags = { Name = "${var.name}-kafka" }
 }

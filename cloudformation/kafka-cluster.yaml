@@ -1,19 +1,17 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Transform: AWS::LanguageExtensions
 Description: >-
-  Self-managed 3-node Apache Kafka cluster (KRaft mode, no ZooKeeper, no MSK) on EC2.
-  Each node runs a broker and a controller in its own availability zone.
+  Self-managed single-node Apache Kafka cluster (KRaft mode, no ZooKeeper, no MSK) on one EC2 instance.
 
 Parameters:
   InstanceType:
     Type: String
-    Default: t3.medium
-    Description: EC2 instance type for Kafka nodes.
+    Default: c7i-flex.large
+    Description: EC2 instance type for the Kafka node.
   HeapSize:
     Type: String
     Default: 1g
     AllowedPattern: "^[0-9]+[mg]$"
-    Description: JVM heap for each Kafka node (e.g. 1g).
+    Description: JVM heap for Kafka (e.g. 1g).
   VolumeSizeGb:
     Type: Number
     Default: 30
@@ -35,26 +33,13 @@ Parameters:
     Default: 10.0.0.0/16
     AllowedPattern: "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
     Description: CIDR allowed to reach the Kafka client port 9092 (defaults to the VPC).
-  LatestAmiId:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
-    Description: Amazon Linux 2023 AMI (resolved from SSM).
 
-# Fixed private IPs so the static KRaft controller quorum is known before launch.
-Mappings:
-  Brokers:
-    Broker1:
-      NodeId: "1"
-      AzIndex: "0"
-      PrivateIp: 10.0.0.10
-    Broker2:
-      NodeId: "2"
-      AzIndex: "1"
-      PrivateIp: 10.0.1.10
-    Broker3:
-      NodeId: "3"
-      AzIndex: "2"
-      PrivateIp: 10.0.2.10
+
+Rules:
+  RegionIsUsEast2:
+    Assertions:
+      - Assert: !Equals [!Ref AWS::Region, us-east-2]
+        AssertDescription: This template hardcodes a us-east-2 AMI; deploy it in us-east-2.
 
 Resources:
   Vpc:
@@ -80,9 +65,8 @@ Resources:
       VpcId: !Ref Vpc
       InternetGatewayId: !Ref InternetGateway
 
-  # Public subnets let the brokers download Kafka without a NAT gateway.
-  # The security group, not the subnet, keeps the Kafka ports private.
-  PublicSubnet1:
+  
+  PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
@@ -91,29 +75,7 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub ${AWS::StackName}-public-1
-
-  PublicSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref Vpc
-      CidrBlock: 10.0.1.0/24
-      AvailabilityZone: !Select [1, !GetAZs ""]
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub ${AWS::StackName}-public-2
-
-  PublicSubnet3:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref Vpc
-      CidrBlock: 10.0.2.0/24
-      AvailabilityZone: !Select [2, !GetAZs ""]
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub ${AWS::StackName}-public-3
+          Value: !Sub ${AWS::StackName}-public
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -131,28 +93,16 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
-  PublicSubnet1RouteTable:
+  PublicSubnetRouteTable:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet1
-      RouteTableId: !Ref PublicRouteTable
-
-  PublicSubnet2RouteTable:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet2
-      RouteTableId: !Ref PublicRouteTable
-
-  PublicSubnet3RouteTable:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet3
+      SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
   KafkaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Kafka brokers and KRaft controllers
+      GroupDescription: Single-node Kafka (broker + KRaft controller)
       VpcId: !Ref Vpc
       SecurityGroupIngress:
         - Description: Kafka clients
@@ -166,30 +116,9 @@ Resources:
           CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
-          Value: !Sub ${AWS::StackName}-brokers
+          Value: !Sub ${AWS::StackName}-kafka
 
-  KafkaSecurityGroupSelfBroker:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref KafkaSecurityGroup
-      Description: Inter-broker replication
-      IpProtocol: tcp
-      FromPort: 9092
-      ToPort: 9092
-      SourceSecurityGroupId: !Ref KafkaSecurityGroup
-
-  KafkaSecurityGroupSelfController:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref KafkaSecurityGroup
-      Description: KRaft controller quorum between nodes
-      IpProtocol: tcp
-      FromPort: 9093
-      ToPort: 9093
-      SourceSecurityGroupId: !Ref KafkaSecurityGroup
-
-  # Instances are reached with SSM Session Manager, so there is no SSH key or port 22.
-  BrokerRole:
+  KafkaRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -202,147 +131,127 @@ Resources:
       ManagedPolicyArns:
         - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
 
-  BrokerInstanceProfile:
+  KafkaInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Roles:
-        - !Ref BrokerRole
+        - !Ref KafkaRole
 
-  Fn::ForEach::Brokers:
-    - BrokerName
-    - [Broker1, Broker2, Broker3]
-    - ${BrokerName}:
-        Type: AWS::EC2::Instance
-        # The bootstrap script downloads Kafka on first boot, so the internet route must exist.
-        DependsOn:
-          - DefaultRoute
-          - PublicSubnet1RouteTable
-          - PublicSubnet2RouteTable
-          - PublicSubnet3RouteTable
-        Properties:
-          ImageId: !Ref LatestAmiId
-          InstanceType: !Ref InstanceType
-          IamInstanceProfile: !Ref BrokerInstanceProfile
-          SubnetId: !Select
-            - !FindInMap [Brokers, !Ref BrokerName, AzIndex]
-            - [!Ref PublicSubnet1, !Ref PublicSubnet2, !Ref PublicSubnet3]
-          PrivateIpAddress: !FindInMap [Brokers, !Ref BrokerName, PrivateIp]
-          SecurityGroupIds:
-            - !Ref KafkaSecurityGroup
-          MetadataOptions:
-            HttpTokens: required
-          BlockDeviceMappings:
-            - DeviceName: /dev/xvda
-              Ebs:
-                VolumeType: gp3
-                VolumeSize: !Ref VolumeSizeGb
-                Encrypted: true
-          Tags:
-            - Key: Name
-              Value: !Sub ${AWS::StackName}-${BrokerName}
-          UserData:
-            Fn::Base64:
-              Fn::Sub:
-                - |
-                  #!/bin/bash
-                  # Installs and starts one Apache Kafka node in KRaft mode (combined broker + controller).
-                  # Rendered by CloudFormation Fn::Sub; per-broker values are injected below.
-                  set -euxo pipefail
+  KafkaInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - DefaultRoute
+      - PublicSubnetRouteTable
+    Properties:
+      ImageId: ami-08be4b1b8afa29958
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref KafkaInstanceProfile
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref KafkaSecurityGroup
+      MetadataOptions:
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref VolumeSizeGb
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-kafka
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Installs and starts a single-node Apache Kafka cluster in KRaft mode (broker + controller on one host).
+          # Rendered by CloudFormation Fn::Sub; values are injected below.
+          set -euxo pipefail
 
-                  KAFKA_VERSION="${KafkaVersion}"
-                  SCALA_VERSION="2.13"
-                  NODE_ID="${NodeId}"
-                  CLUSTER_ID="${ClusterId}"
-                  QUORUM_VOTERS="${QuorumVoters}"
-                  ADVERTISED_HOST="${AdvertisedHost}"
-                  HEAP_SIZE="${HeapSize}"
+          KAFKA_VERSION="${KafkaVersion}"
+          SCALA_VERSION="2.13"
+          CLUSTER_ID="${ClusterId}"
+          HEAP_SIZE="${HeapSize}"
 
-                  KAFKA_DIST="kafka_$SCALA_VERSION-$KAFKA_VERSION"
+          KAFKA_DIST="kafka_$SCALA_VERSION-$KAFKA_VERSION"
 
-                  # Kafka 4.x brokers require Java 17+
-                  dnf install -y java-21-amazon-corretto-headless shadow-utils tar gzip
+          # Private IP from instance metadata (IMDSv2); clients in the VPC connect to this address.
+          IMDS_TOKEN=$(curl -fsS -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+          PRIVATE_IP=$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
 
-                  id kafka >/dev/null 2>&1 || useradd --system --no-create-home --shell /sbin/nologin kafka
+          # Kafka 4.x brokers require Java 17+
+          dnf install -y java-21-amazon-corretto-headless shadow-utils tar gzip
 
-                  # dlcdn.apache.org is fast but only hosts current releases; archive.apache.org has every release but is slow.
-                  curl -fsSL --retry 5 -o "/tmp/$KAFKA_DIST.tgz" "https://dlcdn.apache.org/kafka/$KAFKA_VERSION/$KAFKA_DIST.tgz" \
-                    || curl -fsSL --retry 5 -o "/tmp/$KAFKA_DIST.tgz" "https://archive.apache.org/dist/kafka/$KAFKA_VERSION/$KAFKA_DIST.tgz"
-                  tar -xzf "/tmp/$KAFKA_DIST.tgz" -C /opt
-                  rm -f "/tmp/$KAFKA_DIST.tgz"
-                  ln -sfn "/opt/$KAFKA_DIST" /opt/kafka
+          id kafka >/dev/null 2>&1 || useradd --system --no-create-home --shell /sbin/nologin kafka
 
-                  mkdir -p /etc/kafka /var/lib/kafka/data /var/log/kafka
+          # dlcdn.apache.org is fast but only hosts current releases; archive.apache.org has every release but is slow.
+          curl -fsSL --retry 5 -o "/tmp/$KAFKA_DIST.tgz" "https://dlcdn.apache.org/kafka/$KAFKA_VERSION/$KAFKA_DIST.tgz" \
+            || curl -fsSL --retry 5 -o "/tmp/$KAFKA_DIST.tgz" "https://archive.apache.org/dist/kafka/$KAFKA_VERSION/$KAFKA_DIST.tgz"
+          tar -xzf "/tmp/$KAFKA_DIST.tgz" -C /opt
+          rm -f "/tmp/$KAFKA_DIST.tgz"
+          ln -sfn "/opt/$KAFKA_DIST" /opt/kafka
 
-                  cat > /etc/kafka/server.properties <<EOF
-                  process.roles=broker,controller
-                  node.id=$NODE_ID
-                  controller.quorum.voters=$QUORUM_VOTERS
+          mkdir -p /etc/kafka /var/lib/kafka/data /var/log/kafka
 
-                  listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-                  advertised.listeners=PLAINTEXT://$ADVERTISED_HOST:9092
-                  listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-                  controller.listener.names=CONTROLLER
-                  inter.broker.listener.name=PLAINTEXT
+          # Single node: every replication factor / ISR setting must be 1.
+          cat > /etc/kafka/server.properties <<EOF
+          process.roles=broker,controller
+          node.id=1
+          controller.quorum.voters=1@localhost:9093
 
-                  log.dirs=/var/lib/kafka/data
-                  num.partitions=3
-                  default.replication.factor=3
-                  min.insync.replicas=2
-                  offsets.topic.replication.factor=3
-                  transaction.state.log.replication.factor=3
-                  transaction.state.log.min.isr=2
-                  auto.create.topics.enable=false
-                  log.retention.hours=168
-                  EOF
+          listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://localhost:9093
+          advertised.listeners=PLAINTEXT://$PRIVATE_IP:9092
+          listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+          controller.listener.names=CONTROLLER
+          inter.broker.listener.name=PLAINTEXT
 
-                  /opt/kafka/bin/kafka-storage.sh format --ignore-formatted \
-                    --cluster-id "$CLUSTER_ID" \
-                    --config /etc/kafka/server.properties
+          log.dirs=/var/lib/kafka/data
+          num.partitions=3
+          default.replication.factor=1
+          min.insync.replicas=1
+          offsets.topic.replication.factor=1
+          transaction.state.log.replication.factor=1
+          transaction.state.log.min.isr=1
+          auto.create.topics.enable=false
+          log.retention.hours=168
+          EOF
 
-                  chown -R kafka:kafka "/opt/$KAFKA_DIST" /etc/kafka /var/lib/kafka /var/log/kafka
+          /opt/kafka/bin/kafka-storage.sh format --ignore-formatted \
+            --cluster-id "$CLUSTER_ID" \
+            --config /etc/kafka/server.properties
 
-                  cat > /etc/systemd/system/kafka.service <<EOF
-                  [Unit]
-                  Description=Apache Kafka (KRaft)
-                  After=network-online.target
-                  Wants=network-online.target
+          chown -R kafka:kafka "/opt/$KAFKA_DIST" /etc/kafka /var/lib/kafka /var/log/kafka
 
-                  [Service]
-                  Type=simple
-                  User=kafka
-                  Group=kafka
-                  Environment="KAFKA_HEAP_OPTS=-Xms$HEAP_SIZE -Xmx$HEAP_SIZE"
-                  Environment="LOG_DIR=/var/log/kafka"
-                  ExecStart=/opt/kafka/bin/kafka-server-start.sh /etc/kafka/server.properties
-                  ExecStop=/opt/kafka/bin/kafka-server-stop.sh
-                  Restart=on-failure
-                  RestartSec=10
-                  LimitNOFILE=100000
+          cat > /etc/systemd/system/kafka.service <<EOF
+          [Unit]
+          Description=Apache Kafka (KRaft)
+          After=network-online.target
+          Wants=network-online.target
 
-                  [Install]
-                  WantedBy=multi-user.target
-                  EOF
+          [Service]
+          Type=simple
+          User=kafka
+          Group=kafka
+          Environment="KAFKA_HEAP_OPTS=-Xms$HEAP_SIZE -Xmx$HEAP_SIZE"
+          Environment="LOG_DIR=/var/log/kafka"
+          ExecStart=/opt/kafka/bin/kafka-server-start.sh /etc/kafka/server.properties
+          ExecStop=/opt/kafka/bin/kafka-server-stop.sh
+          Restart=on-failure
+          RestartSec=10
+          LimitNOFILE=100000
 
-                  systemctl daemon-reload
-                  systemctl enable --now kafka
-                - NodeId: !FindInMap [Brokers, !Ref BrokerName, NodeId]
-                  AdvertisedHost: !FindInMap [Brokers, !Ref BrokerName, PrivateIp]
-                  QuorumVoters: !Sub
-                    - 1@${Ip1}:9093,2@${Ip2}:9093,3@${Ip3}:9093
-                    - Ip1: !FindInMap [Brokers, Broker1, PrivateIp]
-                      Ip2: !FindInMap [Brokers, Broker2, PrivateIp]
-                      Ip3: !FindInMap [Brokers, Broker3, PrivateIp]
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          systemctl daemon-reload
+          systemctl enable --now kafka
 
 Outputs:
   BootstrapServers:
-    Description: Kafka bootstrap servers (reachable from inside the VPC).
-    Value: !Sub
-      - ${Ip1}:9092,${Ip2}:9092,${Ip3}:9092
-      - Ip1: !FindInMap [Brokers, Broker1, PrivateIp]
-        Ip2: !FindInMap [Brokers, Broker2, PrivateIp]
-        Ip3: !FindInMap [Brokers, Broker3, PrivateIp]
-  BrokerInstanceIds:
-    Description: EC2 instance IDs, for `aws ssm start-session --target <id>`.
-    Value: !Join [",", [!Ref Broker1, !Ref Broker2, !Ref Broker3]]
+    Description: Kafka bootstrap server (reachable from inside the VPC).
+    Value: !Sub ${KafkaInstance.PrivateIp}:9092
+  InstanceId:
+    Description: EC2 instance ID, for `aws ssm start-session --target <id>`.
+    Value: !Ref KafkaInstance
   VpcId:
     Value: !Ref Vpc
