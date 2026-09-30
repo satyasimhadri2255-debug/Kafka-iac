@@ -74,6 +74,7 @@ resource "aws_instance" "kafka" {
     kafka_version = var.kafka_version
     cluster_id    = random_id.cluster_id.b64_url
     heap_size     = var.heap_size
+    secret_arn    = aws_secretsmanager_secret.kafka_admin.arn
   })
   user_data_replace_on_change = true
 
@@ -87,8 +88,13 @@ resource "aws_instance" "kafka" {
     encrypted   = true
   }
 
-  # The bootstrap script downloads Kafka on first boot, so the internet route must exist.
-  depends_on = [aws_route_table_association.satya]
+  # The bootstrap script downloads Kafka and reads the admin secret on first boot, so the
+  # internet route, the secret value and the role's permission to read it must exist.
+  depends_on = [
+    aws_route_table_association.satya,
+    aws_secretsmanager_secret_version.kafka_admin,
+    aws_iam_role_policy.kafka_secret,
+  ]
 
   tags = { Name = "${var.name}-kafka" }
 }

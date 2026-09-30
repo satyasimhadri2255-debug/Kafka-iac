@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 
 export interface KafkaClusterStackProps extends cdk.StackProps {
@@ -16,6 +17,8 @@ export interface KafkaClusterStackProps extends cdk.StackProps {
   readonly volumeSizeGb: number;
   /** Extra CIDRs allowed to reach port 9092. The VPC CIDR is always allowed. */
   readonly clientCidrs: string[];
+  /** SASL/SCRAM username for the Kafka admin. The password is generated in Secrets Manager. */
+  readonly kafkaAdminUser: string;
 }
 
 const VPC_CIDR = '10.0.0.0/16';
@@ -54,6 +57,19 @@ export class KafkaClusterStack extends cdk.Stack {
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore')],
     });
 
+    // SCRAM credentials for the client listener. Secrets Manager generates the password;
+    // the instance reads it at boot with its role, so it never appears in user data.
+    const adminSecret = new secretsmanager.Secret(this, 'KafkaAdminSecret', {
+      description: `SASL/SCRAM-SHA-512 admin credentials for the ${this.stackName} Kafka broker`,
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({ username: props.kafkaAdminUser }),
+        generateStringKey: 'password',
+        passwordLength: 32,
+        excludePunctuation: true,
+      },
+    });
+    adminSecret.grantRead(role);
+
     // KRaft cluster ID: 16 bytes, base64url without padding. Derived from the stack's
     // identity so it is stable across synths; override with `-c clusterId=...`.
     const clusterId: string =
@@ -64,7 +80,8 @@ export class KafkaClusterStack extends cdk.Stack {
       .readFileSync(path.join(__dirname, '..', 'assets', 'bootstrap.sh'), 'utf8')
       .replace('__KAFKA_VERSION__', props.kafkaVersion)
       .replace('__CLUSTER_ID__', clusterId)
-      .replace('__HEAP_SIZE__', props.heapSize);
+      .replace('__HEAP_SIZE__', props.heapSize)
+      .replace('__SECRET_ARN__', adminSecret.secretArn);
 
     const instance = new ec2.Instance(this, 'KafkaInstance', {
       vpc,
@@ -100,6 +117,10 @@ export class KafkaClusterStack extends cdk.Stack {
       value: instance.instanceId,
     });
     new cdk.CfnOutput(this, 'ClusterId', { value: clusterId });
+    new cdk.CfnOutput(this, 'KafkaAdminSecretArn', {
+      description: 'Secrets Manager secret with the SASL/SCRAM admin username and password.',
+      value: adminSecret.secretArn,
+    });
     new cdk.CfnOutput(this, 'VpcId', { value: vpc.vpcId });
   }
 }

@@ -5,6 +5,7 @@
 *.tfvars
 !*.tfvars.example
 crash.log
+terraform/.build/
 
 # CDK
 cdk/node_modules/

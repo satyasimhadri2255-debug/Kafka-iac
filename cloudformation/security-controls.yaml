@@ -1,0 +1,444 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Security controls for the Kafka account: a custom AWS Config rule (detective), an
+  auto-remediating Config rule (reactive), and a conformance pack that deploys both.
+  Account/region-wide: the rules evaluate every security group in the region.
+
+Parameters:
+  CreateConfigRecorder:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Create an AWS Config recorder and delivery channel. Set false if Config is already
+      recording in this account/region (e.g. Control Tower); only one recorder is allowed.
+  RestrictedPorts:
+    Type: String
+    Default: 22,3389,9092,9093
+    AllowedPattern: "^[0-9]+(,[0-9]+)*$"
+    Description: Comma-separated ports that must never be open to 0.0.0.0/0 or ::/0. Matching rules are revoked.
+  AutomaticRemediation:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Revoke world-open ingress on RestrictedPorts automatically instead of only reporting.
+
+Conditions:
+  CreateRecorder: !Equals [!Ref CreateConfigRecorder, "true"]
+
+Resources:
+  # --------------------------------------------------------------------------
+  # AWS Config recorder. Conformance packs need one.
+  # --------------------------------------------------------------------------
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateRecorder
+    # Config keeps writing snapshots here; the bucket is kept on stack delete so the
+    # delete doesn't fail on a non-empty bucket. Empty and delete it by hand.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ConfigBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateRecorder
+    Properties:
+      Bucket: !Ref ConfigBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ConfigBucketCheck
+            Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action:
+              - s3:GetBucketAcl
+              - s3:ListBucket
+            Resource: !GetAtt ConfigBucket.Arn
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+          - Sid: ConfigBucketDelivery
+            Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub ${ConfigBucket.Arn}/AWSLogs/${AWS::AccountId}/Config/*
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                AWS:SourceAccount: !Ref AWS::AccountId
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt ConfigBucket.Arn
+              - !Sub ${ConfigBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  ConfigRecorderRole:
+    Type: AWS::IAM::Role
+    Condition: CreateRecorder
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWS_ConfigRole
+
+  ConfigRecorder:
+    Type: AWS::Config::ConfigurationRecorder
+    Condition: CreateRecorder
+    Properties:
+      RoleARN: !GetAtt ConfigRecorderRole.Arn
+      # Record only what the rules need, to keep Config costs down.
+      RecordingGroup:
+        AllSupported: false
+        ResourceTypes:
+          - AWS::EC2::SecurityGroup
+
+  ConfigDeliveryChannel:
+    Type: AWS::Config::DeliveryChannel
+    Condition: CreateRecorder
+    DependsOn:
+      - ConfigRecorder
+      - ConfigBucketPolicy
+    Properties:
+      S3BucketName: !Ref ConfigBucket
+
+  # Lets the conformance pack wait for the recorder only when this stack creates it.
+  RecorderReady:
+    Type: AWS::CloudFormation::WaitConditionHandle
+    Metadata:
+      DeliveryChannel: !If [CreateRecorder, !Ref ConfigDeliveryChannel, !Ref AWS::NoValue]
+
+  # --------------------------------------------------------------------------
+  # Detective control: Lambda that evaluates security groups. Both rules use it;
+  # the reactive rule narrows it with the `restrictedPorts` rule parameter.
+  # --------------------------------------------------------------------------
+  SgRuleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        # PutEvaluations, plus read access for oversized configuration items.
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSConfigRulesExecutionRole
+
+  SgRuleFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "Custom AWS Config rule: security groups open to 0.0.0.0/0 or ::/0"
+      Runtime: python3.13
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt SgRuleRole.Arn
+      Code:
+        # Same code as terraform/lambda/sg_world_ingress.py (ZipFile limit: 4096 chars).
+        ZipFile: |
+          """Custom AWS Config rule: flag security groups with ingress open to 0.0.0.0/0 or ::/0.
+
+          Rule parameter `restrictedPorts` (comma-separated, optional): only flag world-open
+          rules that cover one of these ports. Without it, any world-open ingress is flagged.
+          """
+          import json
+
+          import boto3
+
+          WORLD = {"0.0.0.0/0", "::/0"}
+          PORT_PROTOCOLS = {"tcp", "udp", "6", "17", "-1"}
+
+          config = boto3.client("config")
+
+
+          def find_violation(sg, ports):
+              """Return a reason string if the SG configuration has a violating ingress rule."""
+              for perm in sg.get("ipPermissions", []):
+                  cidrs = {r.get("cidrIp") for r in perm.get("ipv4Ranges", [])}
+                  cidrs |= {r.get("cidrIpv6") for r in perm.get("ipv6Ranges", [])}
+                  if not cidrs & WORLD:
+                      continue
+                  proto = str(perm.get("ipProtocol"))
+                  if proto == "-1":
+                      lo, hi = 0, 65535
+                  else:
+                      lo, hi = perm.get("fromPort", 0), perm.get("toPort", 65535)
+                  if not ports:
+                      return f"{proto} {lo}-{hi} open to the internet"
+                  if proto not in PORT_PROTOCOLS:
+                      continue
+                  hit = [p for p in ports if lo <= p <= hi]
+                  if hit:
+                      return f"port(s) {','.join(map(str, hit))} open to the internet"
+              return None
+
+
+          def load_item(invoking):
+              """Return the configuration item, fetching it when the notification was oversized."""
+              if invoking["messageType"] != "OversizedConfigurationItemChangeNotification":
+                  return invoking["configurationItem"]
+              summary = invoking["configurationItemSummary"]
+              item = config.get_resource_config_history(
+                  resourceType=summary["resourceType"], resourceId=summary["resourceId"], limit=1
+              )["configurationItems"][0]
+              item["configuration"] = json.loads(item["configuration"])
+              item["configurationItemCaptureTime"] = item["configurationItemCaptureTime"].isoformat()
+              return item
+
+
+          def handler(event, _context):
+              invoking = json.loads(event["invokingEvent"])
+              params = json.loads(event.get("ruleParameters") or "{}")
+              ports = [int(p) for p in str(params.get("restrictedPorts", "")).split(",") if p.strip()]
+              item = load_item(invoking)
+
+              if event.get("eventLeftScope") or item["configurationItemStatus"] in ("ResourceDeleted", "ResourceDeletedNotRecorded"):
+                  compliance, note = "NOT_APPLICABLE", "Resource deleted or out of scope"
+              else:
+                  reason = find_violation(item["configuration"], ports)
+                  compliance = "NON_COMPLIANT" if reason else "COMPLIANT"
+                  note = reason or "No world-open ingress"
+
+              config.put_evaluations(
+                  Evaluations=[{
+                      "ComplianceResourceType": item["resourceType"],
+                      "ComplianceResourceId": item["resourceId"],
+                      "ComplianceType": compliance,
+                      "Annotation": note[:256],
+                      "OrderingTimestamp": item["configurationItemCaptureTime"],
+                  }],
+                  ResultToken=event["resultToken"],
+              )
+
+  SgRuleInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SgRuleFunction
+      Principal: config.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  # --------------------------------------------------------------------------
+  # Reactive control: SSM Automation document that revokes the offending rules.
+  # --------------------------------------------------------------------------
+  RevokeWorldIngressDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Automation
+      DocumentFormat: YAML
+      Content:
+        schemaVersion: "0.3"
+        description: >-
+          Revokes security group ingress rules that are open to 0.0.0.0/0 or ::/0 and cover
+          one of the restricted ports. Used as the auto-remediation for the Config rule.
+        assumeRole: "{{ AutomationAssumeRole }}"
+        parameters:
+          GroupId:
+            type: String
+            description: Security group to fix.
+          RestrictedPorts:
+            type: String
+            description: Comma-separated ports that must not be open to the internet.
+          AutomationAssumeRole:
+            type: String
+            description: Role that Automation assumes to change the security group.
+        mainSteps:
+          - name: RevokeWorldIngress
+            action: aws:executeScript
+            inputs:
+              Runtime: python3.11
+              Handler: handler
+              InputPayload:
+                GroupId: "{{ GroupId }}"
+                RestrictedPorts: "{{ RestrictedPorts }}"
+              Script: |-
+                import boto3
+
+                WORLD = {"0.0.0.0/0", "::/0"}
+
+                def handler(event, _context):
+                    ec2 = boto3.client("ec2")
+                    ports = [int(p) for p in event["RestrictedPorts"].split(",") if p.strip()]
+                    rules = ec2.describe_security_group_rules(
+                        Filters=[{"Name": "group-id", "Values": [event["GroupId"]]}]
+                    )["SecurityGroupRules"]
+                    revoke = []
+                    for r in rules:
+                        if r["IsEgress"] or not {r.get("CidrIpv4"), r.get("CidrIpv6")} & WORLD:
+                            continue
+                        if r["IpProtocol"] == "-1":
+                            lo, hi = 0, 65535
+                        elif r["IpProtocol"] in ("tcp", "udp", "6", "17"):
+                            lo, hi = r["FromPort"], r["ToPort"]
+                        else:
+                            continue
+                        if any(lo <= p <= hi for p in ports):
+                            revoke.append(r["SecurityGroupRuleId"])
+                    if revoke:
+                        ec2.revoke_security_group_ingress(GroupId=event["GroupId"], SecurityGroupRuleIds=revoke)
+                    return {"revoked": revoke}
+            outputs:
+              - Name: RevokedRuleIds
+                Selector: $.Payload.revoked
+                Type: StringList
+            isEnd: true
+
+  RemediationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: revoke-world-ingress
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ec2:DescribeSecurityGroupRules
+                Resource: "*"
+              - Effect: Allow
+                Action: ec2:RevokeSecurityGroupIngress
+                Resource: !Sub arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:security-group/*
+
+  # --------------------------------------------------------------------------
+  # Conformance pack: both rules plus the remediation, deployed as one unit.
+  # --------------------------------------------------------------------------
+  SgControlsPack:
+    Type: AWS::Config::ConformancePack
+    DependsOn:
+      - SgRuleInvokePermission
+      - RecorderReady
+    Properties:
+      ConformancePackName: !Sub ${AWS::StackName}-sg-controls
+      ConformancePackInputParameters:
+        - ParameterName: RuleLambdaArn
+          ParameterValue: !GetAtt SgRuleFunction.Arn
+        - ParameterName: RemediationDocumentName
+          ParameterValue: !Ref RevokeWorldIngressDocument
+        - ParameterName: RemediationRoleArn
+          ParameterValue: !GetAtt RemediationRole.Arn
+        - ParameterName: RestrictedPorts
+          ParameterValue: !Ref RestrictedPorts
+        - ParameterName: AutomaticRemediation
+          ParameterValue: !Ref AutomaticRemediation
+      # Same template as terraform/templates/conformance-pack.yaml.
+      TemplateBody: |
+        # Conformance pack: the two security group controls, deployed and tracked as one unit.
+        # Only AWS::Config::ConfigRule and AWS::Config::RemediationConfiguration are allowed here;
+        # the Lambda, SSM document and IAM role live outside the pack and are passed in.
+        Parameters:
+          RuleLambdaArn:
+            Type: String
+          RemediationDocumentName:
+            Type: String
+          RemediationRoleArn:
+            Type: String
+          RestrictedPorts:
+            Type: String
+          AutomaticRemediation:
+            Type: String
+
+        Resources:
+          # Detective control: reports every security group with any ingress open to the internet.
+          SgNoWorldIngress:
+            Type: AWS::Config::ConfigRule
+            Properties:
+              ConfigRuleName: sg-no-world-ingress
+              Description: Flags security groups with any ingress rule open to 0.0.0.0/0 or ::/0.
+              Scope:
+                ComplianceResourceTypes:
+                  - AWS::EC2::SecurityGroup
+              Source:
+                Owner: CUSTOM_LAMBDA
+                SourceIdentifier:
+                  Ref: RuleLambdaArn
+                SourceDetails:
+                  - EventSource: aws.config
+                    MessageType: ConfigurationItemChangeNotification
+                  - EventSource: aws.config
+                    MessageType: OversizedConfigurationItemChangeNotification
+
+          # Reactive control: sensitive ports open to the internet are revoked automatically.
+          SgNoWorldIngressRestrictedPorts:
+            Type: AWS::Config::ConfigRule
+            Properties:
+              ConfigRuleName: sg-no-world-ingress-restricted-ports
+              Description: Flags and auto-remediates security groups that open restricted ports to 0.0.0.0/0 or ::/0.
+              InputParameters:
+                restrictedPorts:
+                  Ref: RestrictedPorts
+              Scope:
+                ComplianceResourceTypes:
+                  - AWS::EC2::SecurityGroup
+              Source:
+                Owner: CUSTOM_LAMBDA
+                SourceIdentifier:
+                  Ref: RuleLambdaArn
+                SourceDetails:
+                  - EventSource: aws.config
+                    MessageType: ConfigurationItemChangeNotification
+                  - EventSource: aws.config
+                    MessageType: OversizedConfigurationItemChangeNotification
+
+          SgNoWorldIngressRestrictedPortsRemediation:
+            Type: AWS::Config::RemediationConfiguration
+            DependsOn: SgNoWorldIngressRestrictedPorts
+            Properties:
+              ConfigRuleName: sg-no-world-ingress-restricted-ports
+              TargetType: SSM_DOCUMENT
+              TargetId:
+                Ref: RemediationDocumentName
+              Automatic:
+                Ref: AutomaticRemediation
+              MaximumAutomaticAttempts: 3
+              RetryAttemptSeconds: 60
+              Parameters:
+                GroupId:
+                  ResourceValue:
+                    Value: RESOURCE_ID
+                RestrictedPorts:
+                  StaticValue:
+                    Values:
+                      - Ref: RestrictedPorts
+                AutomationAssumeRole:
+                  StaticValue:
+                    Values:
+                      - Ref: RemediationRoleArn
+
+Outputs:
+  ConformancePack:
+    Value: !Ref SgControlsPack
+  RuleFunction:
+    Value: !Ref SgRuleFunction
+  RemediationDocument:
+    Value: !Ref RevokeWorldIngressDocument

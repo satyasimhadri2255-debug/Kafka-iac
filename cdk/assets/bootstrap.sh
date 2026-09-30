@@ -7,15 +7,17 @@ KAFKA_VERSION="__KAFKA_VERSION__"
 SCALA_VERSION="2.13"
 CLUSTER_ID="__CLUSTER_ID__"
 HEAP_SIZE="__HEAP_SIZE__"
+SECRET_ARN="__SECRET_ARN__"
 
 KAFKA_DIST="kafka_$SCALA_VERSION-$KAFKA_VERSION"
 
 # Private IP from instance metadata (IMDSv2); clients in the VPC connect to this address.
 IMDS_TOKEN=$(curl -fsS -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
 PRIVATE_IP=$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
+REGION=$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
 
 # Kafka 4.x brokers require Java 17+
-dnf install -y java-21-amazon-corretto-headless shadow-utils tar gzip
+dnf install -y java-21-amazon-corretto-headless shadow-utils tar gzip jq
 
 id kafka >/dev/null 2>&1 || useradd --system --no-create-home --shell /sbin/nologin kafka
 
@@ -28,17 +30,31 @@ ln -sfn "/opt/$KAFKA_DIST" /opt/kafka
 
 mkdir -p /etc/kafka /var/lib/kafka/data /var/log/kafka
 
+# Admin credentials live in Secrets Manager and are read here with the instance role,
+# so they never appear in user data. Tracing is off so the password stays out of
+# /var/log/cloud-init-output.log.
+set +x
+SECRET=$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$SECRET_ARN" --query SecretString --output text)
+KAFKA_USER=$(jq -r .username <<<"$SECRET")
+KAFKA_PASSWORD=$(jq -r .password <<<"$SECRET")
+JAAS="org.apache.kafka.common.security.scram.ScramLoginModule required username=\"$KAFKA_USER\" password=\"$KAFKA_PASSWORD\";"
+umask 077
+
 # Single node: every replication factor / ISR setting must be 1.
+# Clients authenticate with SASL/SCRAM-SHA-512; the controller listener stays on localhost.
 cat > /etc/kafka/server.properties <<EOF
 process.roles=broker,controller
 node.id=1
 controller.quorum.voters=1@localhost:9093
 
-listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://localhost:9093
-advertised.listeners=PLAINTEXT://$PRIVATE_IP:9092
-listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+listeners=SASL_PLAINTEXT://0.0.0.0:9092,CONTROLLER://localhost:9093
+advertised.listeners=SASL_PLAINTEXT://$PRIVATE_IP:9092
+listener.security.protocol.map=SASL_PLAINTEXT:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT
 controller.listener.names=CONTROLLER
-inter.broker.listener.name=PLAINTEXT
+inter.broker.listener.name=SASL_PLAINTEXT
+sasl.enabled.mechanisms=SCRAM-SHA-512
+sasl.mechanism.inter.broker.protocol=SCRAM-SHA-512
+listener.name.sasl_plaintext.scram-sha-512.sasl.jaas.config=$JAAS
 
 log.dirs=/var/lib/kafka/data
 num.partitions=3
@@ -51,9 +67,22 @@ auto.create.topics.enable=false
 log.retention.hours=168
 EOF
 
+# Client settings for the Kafka CLI tools on this host (--command-config).
+cat > /etc/kafka/client.properties <<EOF
+security.protocol=SASL_PLAINTEXT
+sasl.mechanism=SCRAM-SHA-512
+sasl.jaas.config=$JAAS
+EOF
+
+# --add-scram stores the admin's SCRAM credential in the KRaft bootstrap metadata.
 /opt/kafka/bin/kafka-storage.sh format --ignore-formatted \
   --cluster-id "$CLUSTER_ID" \
-  --config /etc/kafka/server.properties
+  --config /etc/kafka/server.properties \
+  --add-scram "SCRAM-SHA-512=[name=$KAFKA_USER,password=$KAFKA_PASSWORD]"
+
+unset SECRET KAFKA_PASSWORD JAAS
+umask 022
+set -x
 
 chown -R kafka:kafka "/opt/$KAFKA_DIST" /etc/kafka /var/lib/kafka /var/log/kafka
 
