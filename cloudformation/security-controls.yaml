@@ -340,100 +340,71 @@ Resources:
       - RecorderReady
     Properties:
       ConformancePackName: !Sub ${AWS::StackName}-sg-controls
-      ConformancePackInputParameters:
-        - ParameterName: RuleLambdaArn
-          ParameterValue: !GetAtt SgRuleFunction.Arn
-        - ParameterName: RemediationDocumentName
-          ParameterValue: !Ref RevokeWorldIngressDocument
-        - ParameterName: RemediationRoleArn
-          ParameterValue: !GetAtt RemediationRole.Arn
-        - ParameterName: RestrictedPorts
-          ParameterValue: !Ref RestrictedPorts
-        - ParameterName: AutomaticRemediation
-          ParameterValue: !Ref AutomaticRemediation
-      # Same template as terraform/templates/conformance-pack.yaml.
-      TemplateBody: |
-        # Conformance pack: the two security group controls, deployed and tracked as one unit.
-        # Only AWS::Config::ConfigRule and AWS::Config::RemediationConfiguration are allowed here;
-        # the Lambda, SSM document and IAM role live outside the pack and are passed in.
-        Parameters:
-          RuleLambdaArn:
-            Type: String
-          RemediationDocumentName:
-            Type: String
-          RemediationRoleArn:
-            Type: String
-          RestrictedPorts:
-            Type: String
-          AutomaticRemediation:
-            Type: String
+      # Values are rendered into the pack template with Fn::Sub instead of passed as pack
+      # input parameters: with three or more input parameters, pack creation failed with
+      # "The specified AWS Lambda function must be in the same region as the AWS Config rule".
+      TemplateBody: !Sub |
+          Resources:
+            # Detective control: reports every security group with any ingress open to the internet.
+            SgNoWorldIngress:
+              Type: AWS::Config::ConfigRule
+              Properties:
+                ConfigRuleName: sg-no-world-ingress
+                Description: Flags security groups with any ingress rule open to 0.0.0.0/0 or ::/0.
+                Scope:
+                  ComplianceResourceTypes:
+                    - AWS::EC2::SecurityGroup
+                Source:
+                  Owner: CUSTOM_LAMBDA
+                  SourceIdentifier: ${SgRuleFunction.Arn}
+                  SourceDetails:
+                    - EventSource: aws.config
+                      MessageType: ConfigurationItemChangeNotification
+                    - EventSource: aws.config
+                      MessageType: OversizedConfigurationItemChangeNotification
 
-        Resources:
-          # Detective control: reports every security group with any ingress open to the internet.
-          SgNoWorldIngress:
-            Type: AWS::Config::ConfigRule
-            Properties:
-              ConfigRuleName: sg-no-world-ingress
-              Description: Flags security groups with any ingress rule open to 0.0.0.0/0 or ::/0.
-              Scope:
-                ComplianceResourceTypes:
-                  - AWS::EC2::SecurityGroup
-              Source:
-                Owner: CUSTOM_LAMBDA
-                SourceIdentifier:
-                  Ref: RuleLambdaArn
-                SourceDetails:
-                  - EventSource: aws.config
-                    MessageType: ConfigurationItemChangeNotification
-                  - EventSource: aws.config
-                    MessageType: OversizedConfigurationItemChangeNotification
+            # Reactive control: sensitive ports open to the internet are revoked automatically.
+            SgNoWorldIngressRestrictedPorts:
+              Type: AWS::Config::ConfigRule
+              Properties:
+                ConfigRuleName: sg-no-world-ingress-restricted-ports
+                Description: Flags and auto-remediates security groups that open restricted ports to 0.0.0.0/0 or ::/0.
+                InputParameters:
+                  restrictedPorts: "${RestrictedPorts}"
+                Scope:
+                  ComplianceResourceTypes:
+                    - AWS::EC2::SecurityGroup
+                Source:
+                  Owner: CUSTOM_LAMBDA
+                  SourceIdentifier: ${SgRuleFunction.Arn}
+                  SourceDetails:
+                    - EventSource: aws.config
+                      MessageType: ConfigurationItemChangeNotification
+                    - EventSource: aws.config
+                      MessageType: OversizedConfigurationItemChangeNotification
 
-          # Reactive control: sensitive ports open to the internet are revoked automatically.
-          SgNoWorldIngressRestrictedPorts:
-            Type: AWS::Config::ConfigRule
-            Properties:
-              ConfigRuleName: sg-no-world-ingress-restricted-ports
-              Description: Flags and auto-remediates security groups that open restricted ports to 0.0.0.0/0 or ::/0.
-              InputParameters:
-                restrictedPorts:
-                  Ref: RestrictedPorts
-              Scope:
-                ComplianceResourceTypes:
-                  - AWS::EC2::SecurityGroup
-              Source:
-                Owner: CUSTOM_LAMBDA
-                SourceIdentifier:
-                  Ref: RuleLambdaArn
-                SourceDetails:
-                  - EventSource: aws.config
-                    MessageType: ConfigurationItemChangeNotification
-                  - EventSource: aws.config
-                    MessageType: OversizedConfigurationItemChangeNotification
-
-          SgNoWorldIngressRestrictedPortsRemediation:
-            Type: AWS::Config::RemediationConfiguration
-            DependsOn: SgNoWorldIngressRestrictedPorts
-            Properties:
-              ConfigRuleName: sg-no-world-ingress-restricted-ports
-              TargetType: SSM_DOCUMENT
-              TargetId:
-                Ref: RemediationDocumentName
-              Automatic:
-                Ref: AutomaticRemediation
-              MaximumAutomaticAttempts: 3
-              RetryAttemptSeconds: 60
-              Parameters:
-                GroupId:
-                  ResourceValue:
-                    Value: RESOURCE_ID
-                RestrictedPorts:
-                  StaticValue:
-                    Values:
-                      - Ref: RestrictedPorts
-                AutomationAssumeRole:
-                  StaticValue:
-                    Values:
-                      - Ref: RemediationRoleArn
+            SgNoWorldIngressRestrictedPortsRemediation:
+              Type: AWS::Config::RemediationConfiguration
+              DependsOn: SgNoWorldIngressRestrictedPorts
+              Properties:
+                ConfigRuleName: sg-no-world-ingress-restricted-ports
+                TargetType: SSM_DOCUMENT
+                TargetId: ${RevokeWorldIngressDocument}
+                Automatic: ${AutomaticRemediation}
+                MaximumAutomaticAttempts: 3
+                RetryAttemptSeconds: 60
+                Parameters:
+                  GroupId:
+                    ResourceValue:
+                      Value: RESOURCE_ID
+                  RestrictedPorts:
+                    StaticValue:
+                      Values:
+                        - "${RestrictedPorts}"
+                  AutomationAssumeRole:
+                    StaticValue:
+                      Values:
+                        - ${RemediationRole.Arn}
 
 Outputs:
   ConformancePack:

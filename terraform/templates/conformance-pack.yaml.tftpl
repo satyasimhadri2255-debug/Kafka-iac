@@ -1,17 +1,10 @@
 # Conformance pack: the two security group controls, deployed and tracked as one unit.
 # Only AWS::Config::ConfigRule and AWS::Config::RemediationConfiguration are allowed here;
-# the Lambda, SSM document and IAM role live outside the pack and are passed in.
-Parameters:
-  RuleLambdaArn:
-    Type: String
-  RemediationDocumentName:
-    Type: String
-  RemediationRoleArn:
-    Type: String
-  RestrictedPorts:
-    Type: String
-  AutomaticRemediation:
-    Type: String
+# the Lambda, SSM document and IAM role live outside the pack.
+# Values are rendered into the template instead of passed as pack input parameters:
+# with three or more input parameters, pack creation failed with "The specified AWS
+# Lambda function must be in the same region as the AWS Config rule".
+# Rendered by Terraform templatefile().
 
 Resources:
   # Detective control: reports every security group with any ingress open to the internet.
@@ -25,8 +18,7 @@ Resources:
           - AWS::EC2::SecurityGroup
       Source:
         Owner: CUSTOM_LAMBDA
-        SourceIdentifier:
-          Ref: RuleLambdaArn
+        SourceIdentifier: ${rule_lambda_arn}
         SourceDetails:
           - EventSource: aws.config
             MessageType: ConfigurationItemChangeNotification
@@ -40,15 +32,13 @@ Resources:
       ConfigRuleName: sg-no-world-ingress-restricted-ports
       Description: Flags and auto-remediates security groups that open restricted ports to 0.0.0.0/0 or ::/0.
       InputParameters:
-        restrictedPorts:
-          Ref: RestrictedPorts
+        restrictedPorts: "${restricted_ports}"
       Scope:
         ComplianceResourceTypes:
           - AWS::EC2::SecurityGroup
       Source:
         Owner: CUSTOM_LAMBDA
-        SourceIdentifier:
-          Ref: RuleLambdaArn
+        SourceIdentifier: ${rule_lambda_arn}
         SourceDetails:
           - EventSource: aws.config
             MessageType: ConfigurationItemChangeNotification
@@ -61,10 +51,8 @@ Resources:
     Properties:
       ConfigRuleName: sg-no-world-ingress-restricted-ports
       TargetType: SSM_DOCUMENT
-      TargetId:
-        Ref: RemediationDocumentName
-      Automatic:
-        Ref: AutomaticRemediation
+      TargetId: ${remediation_document_name}
+      Automatic: ${automatic_remediation}
       MaximumAutomaticAttempts: 3
       RetryAttemptSeconds: 60
       Parameters:
@@ -74,8 +62,8 @@ Resources:
         RestrictedPorts:
           StaticValue:
             Values:
-              - Ref: RestrictedPorts
+              - "${restricted_ports}"
         AutomationAssumeRole:
           StaticValue:
             Values:
-              - Ref: RemediationRoleArn
+              - ${remediation_role_arn}

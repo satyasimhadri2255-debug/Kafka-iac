@@ -223,29 +223,16 @@ resource "aws_iam_role_policy" "remediation" {
 # ---------------------------------------------------------------------------
 
 resource "aws_config_conformance_pack" "sg_controls" {
-  name          = "${var.name}-sg-controls"
-  template_body = file("${path.module}/templates/conformance-pack.yaml")
-
-  input_parameter {
-    parameter_name  = "RuleLambdaArn"
-    parameter_value = aws_lambda_function.sg_rule.arn
-  }
-  input_parameter {
-    parameter_name  = "RemediationDocumentName"
-    parameter_value = aws_ssm_document.revoke_world_ingress.name
-  }
-  input_parameter {
-    parameter_name  = "RemediationRoleArn"
-    parameter_value = aws_iam_role.remediation.arn
-  }
-  input_parameter {
-    parameter_name  = "RestrictedPorts"
-    parameter_value = local.restricted_ports
-  }
-  input_parameter {
-    parameter_name  = "AutomaticRemediation"
-    parameter_value = tostring(var.automatic_remediation)
-  }
+  name = "${var.name}-sg-controls"
+  # Values are rendered into the template rather than passed as input_parameter blocks;
+  # see the note at the top of the template.
+  template_body = templatefile("${path.module}/templates/conformance-pack.yaml.tftpl", {
+    rule_lambda_arn           = aws_lambda_function.sg_rule.arn
+    remediation_document_name = aws_ssm_document.revoke_world_ingress.name
+    remediation_role_arn      = aws_iam_role.remediation.arn
+    restricted_ports          = local.restricted_ports
+    automatic_remediation     = var.automatic_remediation
+  })
 
   depends_on = [
     aws_lambda_permission.config,

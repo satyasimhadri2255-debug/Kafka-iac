@@ -141,14 +141,14 @@ Each tool also deploys a small set of account-level guardrails, in the style of 
 | `sg-no-world-ingress-restricted-ports` | Reactive (custom Config rule + auto-remediation) | Same Lambda, limited to restricted ports (default `22,3389,9092,9093`). A non-compliant group triggers an SSM Automation document that revokes the offending ingress rules. |
 | `<name>-sg-controls` | Conformance pack | Deploys both rules and the remediation as one unit, with one compliance score. |
 
-The Lambda, the SSM Automation document, and the remediation IAM role live outside the pack (a pack may only contain Config rules and remediation configurations), and are passed to it as pack parameters.
+The Lambda, the SSM Automation document, and the remediation IAM role live outside the pack, because a pack may only contain Config rules and remediation configurations. Their ARNs and names are rendered into the pack template at deploy time. Pack input parameters aren't used: with three or more of them, pack creation failed with `The specified AWS Lambda function must be in the same region as the AWS Config rule`.
 
 | | CloudFormation | CDK | Terraform |
 |---|---|---|---|
 | Where | `security-controls.yaml` (separate stack) | `lib/security-controls-stack.ts` (stack `KafkaCdkSecurityControls`) | `security.tf` |
 | Lambda | inline `ZipFile` | `assets/lambda/sg_world_ingress.py` | `lambda/sg_world_ingress.py` |
 | SSM document | inline | `assets/revoke-world-ingress.yaml` | `templates/revoke-world-ingress.yaml` |
-| Pack template | inline `TemplateBody` | `assets/conformance-pack.yaml` | `templates/conformance-pack.yaml` |
+| Pack template | inline `TemplateBody` (`Fn::Sub`) | `assets/conformance-pack.yaml` | `templates/conformance-pack.yaml.tftpl` |
 | Settings | `CreateConfigRecorder`, `RestrictedPorts`, `AutomaticRemediation` | `createConfigRecorder`, `restrictedPorts`, `automaticRemediation` | `create_config_recorder`, `restricted_ports`, `automatic_remediation` |
 
 > **Warning: these controls apply to the whole account and region, not only the Kafka stack.** Once deployed, any security group in us-east-2 that opens a restricted port to the internet has that ingress rule **revoked automatically**, including groups owned by other projects. To only report, set automatic remediation to `false`.

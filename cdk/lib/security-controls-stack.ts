@@ -127,14 +127,15 @@ export class SecurityControlsStack extends cdk.Stack {
     // Conformance pack: both rules plus the remediation, deployed as one unit.
     const pack = new config.CfnConformancePack(this, 'SgControlsPack', {
       conformancePackName: `${this.stackName}-sg-controls`,
-      templateBody: fs.readFileSync(path.join(ASSETS, 'conformance-pack.yaml'), 'utf8'),
-      conformancePackInputParameters: [
-        { parameterName: 'RuleLambdaArn', parameterValue: ruleFn.functionArn },
-        { parameterName: 'RemediationDocumentName', parameterValue: document.ref },
-        { parameterName: 'RemediationRoleArn', parameterValue: remediationRole.roleArn },
-        { parameterName: 'RestrictedPorts', parameterValue: props.restrictedPorts.join(',') },
-        { parameterName: 'AutomaticRemediation', parameterValue: String(props.automaticRemediation) },
-      ],
+      // Values are rendered into the template rather than passed as conformance pack input
+      // parameters; see the note at the top of the template.
+      templateBody: fs
+        .readFileSync(path.join(ASSETS, 'conformance-pack.yaml'), 'utf8')
+        .replaceAll('__RULE_LAMBDA_ARN__', ruleFn.functionArn)
+        .replaceAll('__REMEDIATION_DOCUMENT_NAME__', document.ref)
+        .replaceAll('__REMEDIATION_ROLE_ARN__', remediationRole.roleArn)
+        .replaceAll('__RESTRICTED_PORTS__', props.restrictedPorts.join(','))
+        .replaceAll('__AUTOMATIC_REMEDIATION__', String(props.automaticRemediation)),
     });
     pack.node.addDependency(invokePermission);
     if (recorderReady) pack.node.addDependency(recorderReady);
