@@ -147,8 +147,8 @@ The Lambda, the SSM Automation document, and the remediation IAM role live outsi
 |---|---|---|---|
 | Where | `security-controls.yaml` (separate stack) | `lib/security-controls-stack.ts` (stack `KafkaCdkSecurityControls`) | `security.tf` |
 | Lambda | inline `ZipFile` | `assets/lambda/sg_world_ingress.py` | `lambda/sg_world_ingress.py` |
-| SSM document | inline | `assets/revoke-world-ingress.yaml` | `templates/revoke-world-ingress.yaml` |
-| Pack template | inline `TemplateBody` (`Fn::Sub`) | `assets/conformance-pack.yaml` | `templates/conformance-pack.yaml.tftpl` |
+| SSM document | inline | `assets/revoke-world-ingress.yaml` | inline in `security.tf` |
+| Pack template | inline `TemplateBody` (`Fn::Sub`) | `assets/conformance-pack.yaml` | inline in `security.tf` (heredoc) |
 | Settings | `CreateConfigRecorder`, `RestrictedPorts`, `AutomaticRemediation` | `createConfigRecorder`, `restrictedPorts`, `automaticRemediation` | `create_config_recorder`, `restricted_ports`, `automatic_remediation` |
 
 > **Warning: these controls apply to the whole account and region, not only the Kafka stack.** Once deployed, any security group in us-east-2 that opens a restricted port to the internet has that ingress rule **revoked automatically**, including groups owned by other projects. To only report, set automatic remediation to `false`.

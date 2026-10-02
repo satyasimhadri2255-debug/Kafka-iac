@@ -180,7 +180,63 @@ resource "aws_ssm_document" "revoke_world_ingress" {
   name            = "${var.name}-RevokeWorldIngress"
   document_type   = "Automation"
   document_format = "YAML"
-  content         = file("${path.module}/templates/revoke-world-ingress.yaml")
+  content         = <<-YAML
+    schemaVersion: "0.3"
+    description: >-
+      Revokes security group ingress rules that are open to 0.0.0.0/0 or ::/0 and cover
+      one of the restricted ports. Used as the auto-remediation for the Config rule.
+    assumeRole: "{{ AutomationAssumeRole }}"
+    parameters:
+      GroupId:
+        type: String
+        description: Security group to fix.
+      RestrictedPorts:
+        type: String
+        description: Comma-separated ports that must not be open to the internet.
+      AutomationAssumeRole:
+        type: String
+        description: Role that Automation assumes to change the security group.
+    mainSteps:
+      - name: RevokeWorldIngress
+        action: aws:executeScript
+        inputs:
+          Runtime: python3.11
+          Handler: handler
+          InputPayload:
+            GroupId: "{{ GroupId }}"
+            RestrictedPorts: "{{ RestrictedPorts }}"
+          Script: |-
+            import boto3
+
+            WORLD = {"0.0.0.0/0", "::/0"}
+
+            def handler(event, _context):
+                ec2 = boto3.client("ec2")
+                ports = [int(p) for p in event["RestrictedPorts"].split(",") if p.strip()]
+                rules = ec2.describe_security_group_rules(
+                    Filters=[{"Name": "group-id", "Values": [event["GroupId"]]}]
+                )["SecurityGroupRules"]
+                revoke = []
+                for r in rules:
+                    if r["IsEgress"] or not {r.get("CidrIpv4"), r.get("CidrIpv6")} & WORLD:
+                        continue
+                    if r["IpProtocol"] == "-1":
+                        lo, hi = 0, 65535
+                    elif r["IpProtocol"] in ("tcp", "udp", "6", "17"):
+                        lo, hi = r["FromPort"], r["ToPort"]
+                    else:
+                        continue
+                    if any(lo <= p <= hi for p in ports):
+                        revoke.append(r["SecurityGroupRuleId"])
+                if revoke:
+                    ec2.revoke_security_group_ingress(GroupId=event["GroupId"], SecurityGroupRuleIds=revoke)
+                return {"revoked": revoke}
+        outputs:
+          - Name: RevokedRuleIds
+            Selector: $.Payload.revoked
+            Type: StringList
+        isEnd: true
+  YAML
 }
 
 resource "aws_iam_role" "remediation" {
@@ -224,15 +280,72 @@ resource "aws_iam_role_policy" "remediation" {
 
 resource "aws_config_conformance_pack" "sg_controls" {
   name = "${var.name}-sg-controls"
-  # Values are rendered into the template rather than passed as input_parameter blocks;
-  # see the note at the top of the template.
-  template_body = templatefile("${path.module}/templates/conformance-pack.yaml.tftpl", {
-    rule_lambda_arn           = aws_lambda_function.sg_rule.arn
-    remediation_document_name = aws_ssm_document.revoke_world_ingress.name
-    remediation_role_arn      = aws_iam_role.remediation.arn
-    restricted_ports          = local.restricted_ports
-    automatic_remediation     = var.automatic_remediation
-  })
+  # Keep these values in the template rather than using input_parameter blocks;
+  # passing three or more parameters can make AWS Config reject the Lambda rule
+  # because it considers the function to be in a different region.
+  template_body = <<-YAML
+    Resources:
+      # Detective control: reports every security group with any ingress open to the internet.
+      SgNoWorldIngress:
+        Type: AWS::Config::ConfigRule
+        Properties:
+          ConfigRuleName: sg-no-world-ingress
+          Description: Flags security groups with any ingress rule open to 0.0.0.0/0 or ::/0.
+          Scope:
+            ComplianceResourceTypes:
+              - AWS::EC2::SecurityGroup
+          Source:
+            Owner: CUSTOM_LAMBDA
+            SourceIdentifier: ${aws_lambda_function.sg_rule.arn}
+            SourceDetails:
+              - EventSource: aws.config
+                MessageType: ConfigurationItemChangeNotification
+              - EventSource: aws.config
+                MessageType: OversizedConfigurationItemChangeNotification
+
+      # Reactive control: sensitive ports open to the internet are revoked automatically.
+      SgNoWorldIngressRestrictedPorts:
+        Type: AWS::Config::ConfigRule
+        Properties:
+          ConfigRuleName: sg-no-world-ingress-restricted-ports
+          Description: Flags and auto-remediates security groups that open restricted ports to 0.0.0.0/0 or ::/0.
+          InputParameters:
+            restrictedPorts: "${local.restricted_ports}"
+          Scope:
+            ComplianceResourceTypes:
+              - AWS::EC2::SecurityGroup
+          Source:
+            Owner: CUSTOM_LAMBDA
+            SourceIdentifier: ${aws_lambda_function.sg_rule.arn}
+            SourceDetails:
+              - EventSource: aws.config
+                MessageType: ConfigurationItemChangeNotification
+              - EventSource: aws.config
+                MessageType: OversizedConfigurationItemChangeNotification
+
+      SgNoWorldIngressRestrictedPortsRemediation:
+        Type: AWS::Config::RemediationConfiguration
+        DependsOn: SgNoWorldIngressRestrictedPorts
+        Properties:
+          ConfigRuleName: sg-no-world-ingress-restricted-ports
+          TargetType: SSM_DOCUMENT
+          TargetId: ${aws_ssm_document.revoke_world_ingress.name}
+          Automatic: ${var.automatic_remediation}
+          MaximumAutomaticAttempts: 3
+          RetryAttemptSeconds: 60
+          Parameters:
+            GroupId:
+              ResourceValue:
+                Value: RESOURCE_ID
+            RestrictedPorts:
+              StaticValue:
+                Values:
+                  - "${local.restricted_ports}"
+            AutomationAssumeRole:
+              StaticValue:
+                Values:
+                  - ${aws_iam_role.remediation.arn}
+  YAML
 
   depends_on = [
     aws_lambda_permission.config,

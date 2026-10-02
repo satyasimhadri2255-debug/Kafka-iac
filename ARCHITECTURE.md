@@ -24,7 +24,7 @@ Kafka-iac/
     ├── security.tf                 # Config recorder, rules, remediation, conformance pack
     ├── outputs.tf                  # bootstrap servers, instance ID, ...
     ├── lambda/sg_world_ingress.py  # custom Config rule
-    └── templates/                  # user data, SSM doc, pack template
+    └── templates/bootstrap.sh.tftpl  # user data script
 ```
 
 ## What gets created
