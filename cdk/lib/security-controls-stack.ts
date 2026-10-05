@@ -97,6 +97,8 @@ export class SriSecurityControlsStack extends cdk.Stack {
       targetType: 'SSM_DOCUMENT',
       targetId: 'AWSConfigRemediation-RemoveUnrestrictedSourceIngressRules',
       automatic: true,
+      maximumAutomaticAttempts: 3,
+      retryAttemptSeconds: 60,
       parameters: {
         SecurityGroupId: { ResourceValue: { Value: 'RESOURCE_ID' } },
         AutomationAssumeRole: { StaticValue: { Values: [remediationRole.roleArn] } },

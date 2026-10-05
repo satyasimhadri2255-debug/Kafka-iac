@@ -51,6 +51,9 @@ resource "aws_config_remediation_configuration" "sri_remediation" {
   target_id        = "AWSConfigRemediation-RemoveUnrestrictedSourceIngressRules"
   automatic        = true
 
+  maximum_automatic_attempts = 3
+  retry_attempt_seconds      = 60
+
   parameter {
     name           = "SecurityGroupId"
     resource_value = "RESOURCE_ID"

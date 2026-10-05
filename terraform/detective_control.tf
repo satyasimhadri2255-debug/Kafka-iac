@@ -17,6 +17,11 @@ resource "aws_iam_role" "sri_lambda_role" {
   })
 }
 
+resource "aws_iam_role_policy_attachment" "sri_lambda_logs" {
+  role       = aws_iam_role.sri_lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
 resource "aws_iam_role_policy_attachment" "sri_lambda_config" {
   role       = aws_iam_role.sri_lambda_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSConfigRulesExecutionRole"

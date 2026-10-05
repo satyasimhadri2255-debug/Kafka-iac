@@ -70,6 +70,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - arn:aws:iam::aws:policy/service-role/AWSConfigRulesExecutionRole
 
   SriSgRuleLambda:
@@ -207,6 +208,8 @@ Resources:
       TargetType: SSM_DOCUMENT
       TargetId: AWSConfigRemediation-RemoveUnrestrictedSourceIngressRules
       Automatic: true
+      MaximumAutomaticAttempts: 3
+      RetryAttemptSeconds: 60
       Parameters:
         SecurityGroupId:
           ResourceValue:
