@@ -1,8 +1,0 @@
-name          = "kafka-tf"
-instance_type = "c7i-flex.large"
-kafka_version = "4.3.1"
-# client_cidrs = ["203.0.113.10/32"]
-# kafka_admin_user       = "kafka-admin"
-# create_config_recorder = false   # if AWS Config is already recording (e.g. Control Tower)
-# restricted_ports       = [22, 3389, 9092, 9093]
-# automatic_remediation  = true

@@ -18,13 +18,5 @@ terraform {
 }
 
 provider "aws" {
-  # Fixed because the hardcoded AMI in kafka.tf only exists in this region.
   region = "us-east-2"
-
-  default_tags {
-    tags = {
-      Project   = var.name
-      ManagedBy = "terraform"
-    }
-  }
 }

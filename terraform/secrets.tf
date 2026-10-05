@@ -1,35 +1,31 @@
-# SCRAM credentials for the Kafka client listener. The password is generated here and
-# stored only in Secrets Manager; the instance fetches it at boot with its IAM role,
-# so it never appears in user data, tfvars or outputs.
-resource "random_password" "kafka_admin" {
+resource "random_password" "sri_kafka_password" {
   length  = 32
   special = false
 }
 
-resource "aws_secretsmanager_secret" "kafka_admin" {
-  name_prefix             = "${var.name}/kafka-admin-"
-  description             = "SASL/SCRAM-SHA-512 admin credentials for the ${var.name} Kafka broker"
-  recovery_window_in_days = 7
+resource "aws_secretsmanager_secret" "sri_kafka_secret" {
+  name                    = "sri-kafka-secret"
+  recovery_window_in_days = 0
 }
 
-resource "aws_secretsmanager_secret_version" "kafka_admin" {
-  secret_id = aws_secretsmanager_secret.kafka_admin.id
+resource "aws_secretsmanager_secret_version" "sri_kafka_secret_value" {
+  secret_id = aws_secretsmanager_secret.sri_kafka_secret.id
   secret_string = jsonencode({
-    username = var.kafka_admin_user
-    password = random_password.kafka_admin.result
+    username = "sri-kafka-admin"
+    password = random_password.sri_kafka_password.result
   })
 }
 
-resource "aws_iam_role_policy" "kafka_secret" {
-  name = "read-kafka-admin-secret"
-  role = aws_iam_role.kafka.id
+resource "aws_iam_role_policy" "sri_kafka_secret_access" {
+  name = "sri-kafka-secret-access"
+  role = aws_iam_role.sri_kafka_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
       Action   = "secretsmanager:GetSecretValue"
-      Resource = aws_secretsmanager_secret.kafka_admin.arn
+      Resource = aws_secretsmanager_secret.sri_kafka_secret.arn
     }]
   })
 }

@@ -1,110 +1,69 @@
 # Architecture
 
-This repo deploys **one self-managed Apache Kafka node on one EC2 instance** in AWS `us-east-2`. The same setup is written three times, once per IaC tool, so you can compare them side by side. Pick one tool and deploy only that one.
+Lab design: one Kafka node in the default VPC, plus two AWS Config rules that watch security groups. The same resources are written in CloudFormation, CDK and Terraform.
 
 ## Repo layout
 
 ```
 Kafka-iac/
 ├── cloudformation/
-│   ├── kafka-cluster.yaml          # Kafka stack, bootstrap script inline
-│   └── security-controls.yaml      # Config rules, remediation, conformance pack
-├── cdk/                            # AWS CDK v2, TypeScript
-│   ├── bin/kafka.ts                # app entry, pins region us-east-2
-│   ├── lib/kafka-cluster-stack.ts  # Kafka stack (VPC, SG, IAM, secret, EC2)
-│   ├── lib/security-controls-stack.ts  # Config rules, remediation, conformance pack
-│   ├── assets/                     # user data, rule Lambda, SSM doc, pack template
-│   └── cdk.json                    # settings under "context"
+│   ├── kafka-cluster.yaml        # Kafka: secret, SG, IAM role, EC2 (user data inline)
+│   └── security-controls.yaml    # Config recorder, Lambda, detective + reactive rules
+├── cdk/
+│   ├── bin/kafka.ts              # app: SriKafkaStack + SriSecurityControlsStack
+│   ├── lib/kafka-cluster-stack.ts
+│   ├── lib/security-controls-stack.ts
+│   └── assets/                   # bootstrap.sh, lambda/sri_sg_check.py
 └── terraform/
-    ├── versions.tf                 # providers + region
-    ├── variables.tf                # inputs
-    ├── network.tf                  # VPC, subnet, IGW, route table
-    ├── kafka.tf                    # SG, IAM role, EC2 instance
-    ├── secrets.tf                  # Kafka admin secret + read permission
-    ├── security.tf                 # Config recorder, rules, remediation, conformance pack
-    ├── outputs.tf                  # bootstrap servers, instance ID, ...
-    ├── lambda/sg_world_ingress.py  # custom Config rule
-    └── templates/bootstrap.sh.tftpl  # user data script
+    ├── versions.tf               # providers, region us-east-2
+    ├── kafka.tf                  # default VPC lookup, SG, IAM role, EC2
+    ├── secrets.tf                # generated password + secret + read permission
+    ├── config_recorder.tf        # Config recorder + S3 bucket
+    ├── detective_control.tf      # Lambda + sri-detective-rule
+    ├── reactive_control.tf       # sri-reactive-rule + automatic remediation
+    ├── outputs.tf
+    ├── lambda/sri_sg_check.py
+    └── templates/bootstrap.sh.tftpl
 ```
 
-## What gets created
+## Diagram
 
 ```
-                     AWS us-east-2
-┌─────────────────────────────────────────────────────┐
-│ VPC 10.0.0.0/16                                     │
-│                                                     │
-│   Internet Gateway ◄── route 0.0.0.0/0              │
-│          │                                          │
-│ ┌────────┴────────────────────────────────────────┐ │
-│ │ Public subnet 10.0.0.0/24                       │ │
-│ │                                                 │ │
-│ │  ┌───────────────────────────────────────────┐  │ │
-│ │  │ EC2  c7i-flex.large  (Amazon Linux 2023)  │  │ │
-│ │  │                                           │  │ │
-│ │  │  Kafka 4.3.1, KRaft mode                  │  │ │
-│ │  │  broker + controller in one process       │  │ │
-│ │  │   :9092  clients     (open to VPC CIDR)   │  │ │
-│ │  │   :9093  controller  (localhost only)     │  │ │
-│ │  │                                           │  │ │
-│ │  │  30 GiB encrypted gp3 root volume         │  │ │
-│ │  └───────────────────────────────────────────┘  │ │
-│ │     Security group: inbound 9092 only           │ │
-│ │     IAM role: SSM core + read Kafka secret      │ │
-│ └─────────────────────────────────────────────────┘ │
-│                                                     │
-│   Secrets Manager: kafka-admin (SCRAM user/pass)    │
-│   AWS Config: SG rules + auto-remediation (pack)    │
-└─────────────────────────────────────────────────────┘
-          ▲
-          │  admin shell via SSM Session Manager (no SSH)
-       You / AWS CLI
+                       AWS us-east-2
+┌──────────────────────────────────────────────────────────┐
+│ Default VPC 172.31.0.0/16                                │
+│   ┌──────────────────────────────────────────────┐       │
+│   │ EC2 sri-kafka (c7i-flex.large, AL2023)       │       │
+│   │ Kafka 4.3.1 KRaft, broker + controller       │       │
+│   │ :9092 SASL/SCRAM (VPC only)                  │       │
+│   │ role sri-kafka-role: SSM + read secret       │       │
+│   └──────────────────────────────────────────────┘       │
+│                                                          │
+│ Secrets Manager: sri-kafka-secret (username/password)    │
+│                                                          │
+│ AWS Config: sri-config-recorder (security groups)        │
+│   sri-detective-rule ──► sri-sg-rule-lambda ──► report   │
+│   sri-reactive-rule  ──► sri-sg-rule-lambda ──► NON_COMPLIANT
+│                              │                           │
+│                              ▼                           │
+│   AWSConfigRemediation-RemoveUnrestrictedSourceIngressRules
+└──────────────────────────────────────────────────────────┘
 ```
-
-| Component | Why it's there |
-|---|---|
-| VPC + public subnet | Isolated network for the node |
-| Internet gateway | Lets the node download Java and Kafka without a NAT gateway |
-| Security group | Only port 9092, only from the VPC CIDR (plus optional extra CIDRs) |
-| IAM role + instance profile | Lets SSM Session Manager reach the instance, so port 22 stays closed, and lets the instance read the admin secret |
-| Secrets Manager secret | Generated SASL/SCRAM admin password, read by the instance at boot |
-| EC2 instance | Runs Kafka as a `systemd` service under a `kafka` user |
-| Config rules + conformance pack | Flag security groups open to the internet, and revoke world-open ingress on restricted ports |
 
 ## How the node boots
 
-Each tool passes the same script as EC2 user data. On first boot it:
+The user data script:
+1. Installs Java 21 and `jq`
+2. Downloads Kafka 4.3.1 to `/opt/kafka`
+3. Reads the username and password from Secrets Manager
+4. Writes `sri-server.properties` and `sri-client.properties` in `/opt/kafka/config`
+5. Formats storage with a generated cluster ID and the admin's SCRAM credential
+6. Starts Kafka
 
-1. Reads the instance's private IP and region from instance metadata (IMDSv2)
-2. Installs Amazon Corretto 21 and `jq`
-3. Downloads Kafka from the Apache CDN, falling back to `archive.apache.org`
-4. Reads the admin credentials from Secrets Manager (shell tracing off, so they stay out of logs)
-5. Writes `/etc/kafka/server.properties` (single node: replication factor 1; SASL/SCRAM listener) and `/etc/kafka/client.properties`
-6. Formats KRaft storage with the cluster ID and the admin's SCRAM credential
-7. Starts `kafka.service`
+## How the controls work
 
-Kafka is ready about 1–2 minutes after the instance starts.
-
-## Same design, three tools
-
-| Concern | CloudFormation | CDK | Terraform |
-|---|---|---|---|
-| Settings | `Parameters` | `cdk.json` context | `variables.tf` / `terraform.tfvars` |
-| Network | explicit VPC, IGW, subnet, routes | `ec2.Vpc` construct | `network.tf` |
-| Bootstrap script | inline in template | `assets/bootstrap.sh` | `templates/bootstrap.sh.tftpl` |
-| Cluster ID | passed in as parameter | generated in stack | `random_id` resource |
-| Region lock | `RegionIsUsEast2` rule | `env.region` in `bin/kafka.ts` | provider `region` |
-
-The region is locked because the AMI ID (`ami-08be4b1b8afa29958`) is hardcoded and only exists in `us-east-2`.
-
-## Limitations
-
-This is a dev/learning setup, not production:
-
-- **Single node:** no high availability and only one copy of the data.
-- **No TLS:** clients authenticate with SASL/SCRAM, but traffic on port 9092 isn't encrypted.
-- **Account-wide controls:** the Config rules and auto-remediation apply to every security group in the region.
-- **Data on root volume:** replacing the instance (for example, changing the AMI) loses all data.
-- **No monitoring,** Schema Registry, or Kafka Connect.
-
-See [README.md](README.md) for deploy, verify, and tear-down commands.
+1. A security group is created or changed, and the Config recorder records it.
+2. Both rules call `sri-sg-rule-lambda`, which checks every ingress rule for `0.0.0.0/0` or `::/0`.
+3. `sri-detective-rule` reports any port open to the internet.
+4. `sri-reactive-rule` passes `restrictedPorts=22,3389,9092,9093`, so it flags only those ports.
+5. A non-compliant result on `sri-reactive-rule` starts the AWS-managed SSM runbook, which removes the ingress rules open to the internet from that security group.

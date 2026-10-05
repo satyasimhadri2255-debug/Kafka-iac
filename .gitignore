@@ -1,4 +1,3 @@
-# Terraform
 **/.terraform/
 *.tfstate
 *.tfstate.*
@@ -7,13 +6,13 @@
 crash.log
 terraform/.build/
 
-# CDK
 cdk/node_modules/
 cdk/cdk.out/
 cdk/**/*.js
 cdk/**/*.d.ts
 
-# OS / editor
 .DS_Store
 .idea/
 .vscode/
+
+__pycache__/

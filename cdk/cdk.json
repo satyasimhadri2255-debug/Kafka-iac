@@ -13,21 +13,5 @@
       "package*.json",
       "node_modules"
     ]
-  },
-  "context": {
-    "kafkaVersion": "4.3.1",
-    "instanceType": "c7i-flex.large",
-    "heapSize": "1g",
-    "volumeSizeGb": 30,
-    "clientCidrs": [],
-    "kafkaAdminUser": "kafka-admin",
-    "createConfigRecorder": true,
-    "restrictedPorts": [
-      22,
-      3389,
-      9092,
-      9093
-    ],
-    "automaticRemediation": true
   }
 }
