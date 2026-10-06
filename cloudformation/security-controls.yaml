@@ -51,9 +51,7 @@ Resources:
 
   SriConfigChannel:
     Type: AWS::Config::DeliveryChannel
-    DependsOn:
-      - SriConfigRecorder
-      - SriConfigBucketPolicy
+    DependsOn: SriConfigBucketPolicy
     Properties:
       Name: sri-config-channel
       S3BucketName: !Ref SriConfigBucket
@@ -169,6 +167,7 @@ Resources:
     Type: AWS::Config::ConformancePack
     DependsOn:
       - SriConfigInvoke
+      - SriConfigRecorder
       - SriConfigChannel
     Properties:
       ConformancePackName: sri-conformance-pack

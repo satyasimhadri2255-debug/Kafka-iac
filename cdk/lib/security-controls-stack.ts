@@ -44,7 +44,7 @@ export class SriSecurityControlsStack extends cdk.Stack {
       name: 'sri-config-channel',
       s3BucketName: bucket.bucketName,
     });
-    channel.node.addDependency(recorder, bucket.policy!);
+    channel.node.addDependency(bucket.policy!);
 
     const ruleLambda = new lambda.Function(this, 'SriSgRuleLambda', {
       functionName: 'sri-sg-rule-lambda',
@@ -134,6 +134,6 @@ Resources:
               - ${remediationRole.roleArn}
 `,
     });
-    pack.node.addDependency(channel, invoke);
+    pack.node.addDependency(recorder, channel, invoke);
   }
 }
