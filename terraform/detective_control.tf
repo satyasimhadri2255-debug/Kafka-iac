@@ -43,22 +43,3 @@ resource "aws_lambda_permission" "sri_config_invoke" {
   function_name = aws_lambda_function.sri_sg_rule_lambda.function_name
   principal     = "config.amazonaws.com"
 }
-
-resource "aws_config_config_rule" "sri_detective_rule" {
-  name = "sri-detective-rule"
-
-  scope {
-    compliance_resource_types = ["AWS::EC2::SecurityGroup"]
-  }
-
-  source {
-    owner             = "CUSTOM_LAMBDA"
-    source_identifier = aws_lambda_function.sri_sg_rule_lambda.arn
-
-    source_detail {
-      message_type = "ConfigurationItemChangeNotification"
-    }
-  }
-
-  depends_on = [aws_lambda_permission.sri_config_invoke, aws_config_configuration_recorder_status.sri_config_recorder_status]
-}

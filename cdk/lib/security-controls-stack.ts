@@ -54,24 +54,14 @@ export class SriSecurityControlsStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
-    const sgScope = config.RuleScope.fromResources([config.ResourceType.EC2_SECURITY_GROUP]);
-
-    const detective = new config.CustomRule(this, 'SriDetectiveRule', {
-      configRuleName: 'sri-detective-rule',
-      lambdaFunction: ruleLambda,
-      configurationChanges: true,
-      ruleScope: sgScope,
+    ruleLambda.role!.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSConfigRulesExecutionRole'),
+    );
+    const invoke = new lambda.CfnPermission(this, 'SriConfigInvoke', {
+      action: 'lambda:InvokeFunction',
+      functionName: ruleLambda.functionName,
+      principal: 'config.amazonaws.com',
     });
-    detective.node.addDependency(channel);
-
-    const reactive = new config.CustomRule(this, 'SriReactiveRule', {
-      configRuleName: 'sri-reactive-rule',
-      lambdaFunction: ruleLambda,
-      configurationChanges: true,
-      ruleScope: sgScope,
-      inputParameters: { restrictedPorts: '22,3389,9092,9093' },
-    });
-    reactive.node.addDependency(channel);
 
     const remediationRole = new iam.Role(this, 'SriRemediationRole', {
       roleName: 'sri-remediation-role',
@@ -92,17 +82,58 @@ export class SriSecurityControlsStack extends cdk.Stack {
       },
     });
 
-    new config.CfnRemediationConfiguration(this, 'SriRemediation', {
-      configRuleName: reactive.configRuleName,
-      targetType: 'SSM_DOCUMENT',
-      targetId: 'AWSConfigRemediation-RemoveUnrestrictedSourceIngressRules',
-      automatic: true,
-      maximumAutomaticAttempts: 3,
-      retryAttemptSeconds: 60,
-      parameters: {
-        SecurityGroupId: { ResourceValue: { Value: 'RESOURCE_ID' } },
-        AutomationAssumeRole: { StaticValue: { Values: [remediationRole.roleArn] } },
-      },
+    const pack = new config.CfnConformancePack(this, 'SriConformancePack', {
+      conformancePackName: 'sri-conformance-pack',
+      templateBody: `
+Resources:
+  SriDetectiveRule:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: sri-detective-rule
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::EC2::SecurityGroup
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: ${ruleLambda.functionArn}
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+  SriReactiveRule:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: sri-reactive-rule
+      InputParameters:
+        restrictedPorts: "22,3389,9092,9093"
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::EC2::SecurityGroup
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: ${ruleLambda.functionArn}
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+  SriRemediation:
+    Type: AWS::Config::RemediationConfiguration
+    DependsOn: SriReactiveRule
+    Properties:
+      ConfigRuleName: sri-reactive-rule
+      TargetType: SSM_DOCUMENT
+      TargetId: AWSConfigRemediation-RemoveUnrestrictedSourceIngressRules
+      Automatic: true
+      MaximumAutomaticAttempts: 3
+      RetryAttemptSeconds: 60
+      Parameters:
+        SecurityGroupId:
+          ResourceValue:
+            Value: RESOURCE_ID
+        AutomationAssumeRole:
+          StaticValue:
+            Values:
+              - ${remediationRole.roleArn}
+`,
     });
+    pack.node.addDependency(channel, invoke);
   }
 }

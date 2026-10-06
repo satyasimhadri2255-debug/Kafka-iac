@@ -142,42 +142,6 @@ Resources:
       FunctionName: !Ref SriSgRuleLambda
       Principal: config.amazonaws.com
 
-  SriDetectiveRule:
-    Type: AWS::Config::ConfigRule
-    DependsOn:
-      - SriConfigInvoke
-      - SriConfigChannel
-    Properties:
-      ConfigRuleName: sri-detective-rule
-      Scope:
-        ComplianceResourceTypes:
-          - AWS::EC2::SecurityGroup
-      Source:
-        Owner: CUSTOM_LAMBDA
-        SourceIdentifier: !GetAtt SriSgRuleLambda.Arn
-        SourceDetails:
-          - EventSource: aws.config
-            MessageType: ConfigurationItemChangeNotification
-
-  SriReactiveRule:
-    Type: AWS::Config::ConfigRule
-    DependsOn:
-      - SriConfigInvoke
-      - SriConfigChannel
-    Properties:
-      ConfigRuleName: sri-reactive-rule
-      InputParameters:
-        restrictedPorts: 22,3389,9092,9093
-      Scope:
-        ComplianceResourceTypes:
-          - AWS::EC2::SecurityGroup
-      Source:
-        Owner: CUSTOM_LAMBDA
-        SourceIdentifier: !GetAtt SriSgRuleLambda.Arn
-        SourceDetails:
-          - EventSource: aws.config
-            MessageType: ConfigurationItemChangeNotification
-
   SriRemediationRole:
     Type: AWS::IAM::Role
     Properties:
@@ -201,20 +165,58 @@ Resources:
                   - ec2:GetManagedPrefixListEntries
                 Resource: "*"
 
-  SriRemediation:
-    Type: AWS::Config::RemediationConfiguration
+  SriConformancePack:
+    Type: AWS::Config::ConformancePack
+    DependsOn:
+      - SriConfigInvoke
+      - SriConfigChannel
     Properties:
-      ConfigRuleName: !Ref SriReactiveRule
-      TargetType: SSM_DOCUMENT
-      TargetId: AWSConfigRemediation-RemoveUnrestrictedSourceIngressRules
-      Automatic: true
-      MaximumAutomaticAttempts: 3
-      RetryAttemptSeconds: 60
-      Parameters:
-        SecurityGroupId:
-          ResourceValue:
-            Value: RESOURCE_ID
-        AutomationAssumeRole:
-          StaticValue:
-            Values:
-              - !GetAtt SriRemediationRole.Arn
+      ConformancePackName: sri-conformance-pack
+      TemplateBody: !Sub |
+        Resources:
+          SriDetectiveRule:
+            Type: AWS::Config::ConfigRule
+            Properties:
+              ConfigRuleName: sri-detective-rule
+              Scope:
+                ComplianceResourceTypes:
+                  - AWS::EC2::SecurityGroup
+              Source:
+                Owner: CUSTOM_LAMBDA
+                SourceIdentifier: ${SriSgRuleLambda.Arn}
+                SourceDetails:
+                  - EventSource: aws.config
+                    MessageType: ConfigurationItemChangeNotification
+          SriReactiveRule:
+            Type: AWS::Config::ConfigRule
+            Properties:
+              ConfigRuleName: sri-reactive-rule
+              InputParameters:
+                restrictedPorts: "22,3389,9092,9093"
+              Scope:
+                ComplianceResourceTypes:
+                  - AWS::EC2::SecurityGroup
+              Source:
+                Owner: CUSTOM_LAMBDA
+                SourceIdentifier: ${SriSgRuleLambda.Arn}
+                SourceDetails:
+                  - EventSource: aws.config
+                    MessageType: ConfigurationItemChangeNotification
+          SriRemediation:
+            Type: AWS::Config::RemediationConfiguration
+            DependsOn: SriReactiveRule
+            Properties:
+              ConfigRuleName: sri-reactive-rule
+              TargetType: SSM_DOCUMENT
+              TargetId: AWSConfigRemediation-RemoveUnrestrictedSourceIngressRules
+              Automatic: true
+              MaximumAutomaticAttempts: 3
+              RetryAttemptSeconds: 60
+              Parameters:
+                SecurityGroupId:
+                  ResourceValue:
+                    Value: RESOURCE_ID
+                AutomationAssumeRole:
+                  StaticValue:
+                    Values:
+                      - ${SriRemediationRole.Arn}
