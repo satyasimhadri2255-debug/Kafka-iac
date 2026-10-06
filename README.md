@@ -13,7 +13,8 @@ All three create the same resources with the same `sri-*` names, so deploy only 
 ## What it creates
 
 Kafka:
-- EC2 instance `sri-kafka` (c7i-flex.large, Amazon Linux 2023, `ami-08be4b1b8afa29958`) in the default VPC in us-east-2
+- Network: VPC `sri-vpc` (10.0.0.0/16) with one public subnet `sri-public-subnet` (10.0.1.0/24, us-east-2a), internet gateway `sri-igw` and route table `sri-public-rt`. The internet route is there so the instance can download Java and Kafka
+- EC2 instance `sri-kafka` (c7i-flex.large, Amazon Linux 2023, `ami-08be4b1b8afa29958`) in that subnet
 - Kafka 4.3.1 in KRaft mode, broker and controller in one process
 - Security group `sri-kafka-sg`, port 9092 open to the VPC CIDR only
 - A Secrets Manager secret with the admin user `sri-kafka-admin` and a generated password. The instance reads it at boot through its role `sri-kafka-role`, and clients log in with SASL/SCRAM-SHA-512
@@ -31,7 +32,6 @@ Secret name: Terraform names it `sri-kafka-secret` and generates the password wi
 Things to know before deploying:
 - The controls apply to every security group in us-east-2, not just Kafka's. Use a lab account.
 - An account can only have one Config recorder per region. If one already exists, the deploy fails.
-- The default VPC must exist in us-east-2.
 
 ## Prerequisites
 
@@ -75,7 +75,7 @@ npx cdk deploy --all                               # answer y to the IAM change 
 
 | Stack | What is in it |
 |---|---|
-| `SriKafkaStack` | `sri-kafka-sg`, `sri-kafka-role` + instance profile, Kafka secret, EC2 `sri-kafka` |
+| `SriKafkaStack` | `sri-vpc` with public subnet, internet gateway and route table, `sri-kafka-sg`, `sri-kafka-role` + instance profile, Kafka secret, EC2 `sri-kafka` |
 | `SriSecurityControlsStack` | Config S3 bucket, `sri-config-role`, `sri-config-recorder` + delivery channel, `sri-sg-rule-lambda`, `sri-remediation-role`, `sri-conformance-pack` |
 
 You can also deploy them one at a time with `npx cdk deploy SriKafkaStack` or `npx cdk deploy SriSecurityControlsStack`. After changing the code, run `npx cdk diff --all` to see what will change, then `npx cdk deploy --all` again.

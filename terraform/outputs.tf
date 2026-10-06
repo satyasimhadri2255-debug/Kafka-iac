@@ -1,3 +1,7 @@
+output "sri_vpc_id" {
+  value = aws_vpc.sri_vpc.id
+}
+
 output "sri_kafka_instance_id" {
   value = aws_instance.sri_kafka.id
 }

@@ -10,7 +10,13 @@ export class SriKafkaStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: cdk.StackProps) {
     super(scope, id, props);
 
-    const vpc = ec2.Vpc.fromLookup(this, 'SriDefaultVpc', { isDefault: true });
+    const vpc = new ec2.Vpc(this, 'SriVpc', {
+      vpcName: 'sri-vpc',
+      ipAddresses: ec2.IpAddresses.cidr('10.0.0.0/16'),
+      availabilityZones: ['us-east-2a'],
+      natGateways: 0,
+      subnetConfiguration: [{ name: 'sri-public-subnet', subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 }],
+    });
 
     const secret = new secretsmanager.Secret(this, 'SriKafkaSecret', {
       generateSecretString: {
@@ -48,7 +54,9 @@ export class SriKafkaStack extends cdk.Stack {
       userData: ec2.UserData.custom(script),
       instanceName: 'sri-kafka',
     });
+    instance.node.addDependency(vpc.publicSubnets[0].internetConnectivityEstablished);
 
+    new cdk.CfnOutput(this, 'SriVpcId', { value: vpc.vpcId });
     new cdk.CfnOutput(this, 'SriKafkaInstanceId', { value: instance.instanceId });
     new cdk.CfnOutput(this, 'SriKafkaBootstrapServers', { value: `${instance.instancePrivateIp}:9092` });
     new cdk.CfnOutput(this, 'SriKafkaSecretArn', { value: secret.secretArn });

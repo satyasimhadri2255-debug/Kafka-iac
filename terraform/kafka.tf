@@ -1,16 +1,12 @@
-data "aws_vpc" "sri_default_vpc" {
-  default = true
-}
-
 resource "aws_security_group" "sri_kafka_sg" {
   name   = "sri-kafka-sg"
-  vpc_id = data.aws_vpc.sri_default_vpc.id
+  vpc_id = aws_vpc.sri_vpc.id
 
   ingress {
     from_port   = 9092
     to_port     = 9092
     protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.sri_default_vpc.cidr_block]
+    cidr_blocks = [aws_vpc.sri_vpc.cidr_block]
   }
 
   egress {
@@ -47,6 +43,7 @@ resource "aws_iam_instance_profile" "sri_kafka_profile" {
 resource "aws_instance" "sri_kafka" {
   ami                    = "ami-08be4b1b8afa29958"
   instance_type          = "c7i-flex.large"
+  subnet_id              = aws_subnet.sri_public_subnet.id
   vpc_security_group_ids = [aws_security_group.sri_kafka_sg.id]
   iam_instance_profile   = aws_iam_instance_profile.sri_kafka_profile.name
 
@@ -57,6 +54,7 @@ resource "aws_instance" "sri_kafka" {
   tags = { Name = "sri-kafka" }
 
   depends_on = [
+    aws_route_table_association.sri_public_rt_assoc,
     aws_secretsmanager_secret_version.sri_kafka_secret_value,
     aws_iam_role_policy.sri_kafka_secret_access,
   ]

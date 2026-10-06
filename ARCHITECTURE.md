@@ -1,13 +1,13 @@
 # Architecture
 
-One Kafka node in the default VPC, a secret for its login, and two AWS Config rules in a conformance pack that watch security groups. CloudFormation, CDK and Terraform each build the same thing.
+One Kafka node in its own small VPC, a secret for its login, and two AWS Config rules in a conformance pack that watch security groups. CloudFormation, CDK and Terraform each build the same thing.
 
 ## Files
 
 ```
 Kafka-iac/
 ├── cloudformation/
-│   ├── kafka-cluster.yaml          secret, security group, IAM role, EC2 (user data inline)
+│   ├── kafka-cluster.yaml          VPC + public subnet, secret, security group, IAM role, EC2 (user data inline)
 │   └── security-controls.yaml      Config recorder, S3 bucket, Lambda, remediation role, conformance pack
 ├── cdk/
 │   ├── bin/kafka.ts                creates SriKafkaStack and SriSecurityControlsStack
@@ -15,10 +15,11 @@ Kafka-iac/
 │   ├── lib/security-controls-stack.ts
 │   ├── assets/bootstrap.sh
 │   ├── assets/lambda/sri_sg_check.py
-│   └── cdk.context.json            cached default VPC lookup
+│   └── cdk.context.json            cached availability zones
 └── terraform/
     ├── versions.tf                 providers, region us-east-2
-    ├── kafka.tf                    default VPC lookup, security group, IAM role, EC2
+    ├── network.tf                  VPC, public subnet, internet gateway, route table
+    ├── kafka.tf                    security group, IAM role, EC2
     ├── secrets.tf                  password, secret, permission to read it
     ├── config_recorder.tf          Config recorder, S3 bucket, recorder role
     ├── detective_control.tf        rule Lambda, its role, invoke permission
@@ -36,11 +37,13 @@ The bootstrap script and the Lambda code are the same in all three tools. CloudF
 ```
 us-east-2
 │
-├── Default VPC (172.31.0.0/16)
-│     └── EC2 sri-kafka
-│           Kafka 4.3.1, KRaft, broker + controller
-│           port 9092, SASL/SCRAM, VPC only
-│           role sri-kafka-role (SSM + read secret)
+├── sri-vpc (10.0.0.0/16)
+│     ├── sri-igw + sri-public-rt (0.0.0.0/0 → internet gateway)
+│     └── sri-public-subnet (10.0.1.0/24, us-east-2a)
+│           └── EC2 sri-kafka
+│                 Kafka 4.3.1, KRaft, broker + controller
+│                 port 9092, SASL/SCRAM, VPC only
+│                 role sri-kafka-role (SSM + read secret)
 │
 ├── Secrets Manager
 │     └── sri-kafka-admin / generated password
@@ -78,7 +81,7 @@ Only the secret ARN is passed in through user data. The password itself never ap
 
 ## Why it is built this way
 
-- Default VPC instead of a custom one, to keep the lab small.
+- One public subnet and an internet gateway, no NAT gateway. The instance needs internet access to download Java and Kafka, and the security group still only lets the VPC reach port 9092.
 - One Lambda for both rules. The rules differ only in the `restrictedPorts` parameter.
 - The detective rule only reports, because some internet-open ports (like 443 on a load balancer) are fine. The reactive rule only fixes ports that should never be public.
 - The pack's values (Lambda ARN, role ARN) are written straight into the pack template. Pack input parameters are not used, because with three or more of them pack creation failed with "The specified AWS Lambda function must be in the same region as the AWS Config rule".

@@ -1,7 +1,63 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Sri single-node Apache Kafka on EC2 in the default VPC (lab).
+Description: Sri single-node Apache Kafka on EC2 in its own VPC (lab).
 
 Resources:
+  SriVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: sri-vpc
+
+  SriInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: sri-igw
+
+  SriGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref SriVpc
+      InternetGatewayId: !Ref SriInternetGateway
+
+  SriPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SriVpc
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: us-east-2a
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: sri-public-subnet
+
+  SriPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SriVpc
+      Tags:
+        - Key: Name
+          Value: sri-public-rt
+
+  SriPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: SriGatewayAttachment
+    Properties:
+      RouteTableId: !Ref SriPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref SriInternetGateway
+
+  SriPublicSubnetRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SriPublicSubnet
+      RouteTableId: !Ref SriPublicRouteTable
+
   SriKafkaSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -16,11 +72,12 @@ Resources:
     Properties:
       GroupName: sri-kafka-sg
       GroupDescription: sri-kafka-sg
+      VpcId: !Ref SriVpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 9092
           ToPort: 9092
-          CidrIp: 172.31.0.0/16
+          CidrIp: 10.0.0.0/16
 
   SriKafkaRole:
     Type: AWS::IAM::Role
@@ -53,9 +110,13 @@ Resources:
 
   SriKafkaInstance:
     Type: AWS::EC2::Instance
+    DependsOn:
+      - SriPublicRoute
+      - SriPublicSubnetRouteTable
     Properties:
       ImageId: ami-08be4b1b8afa29958
       InstanceType: c7i-flex.large
+      SubnetId: !Ref SriPublicSubnet
       IamInstanceProfile: !Ref SriKafkaInstanceProfile
       SecurityGroupIds:
         - !GetAtt SriKafkaSecurityGroup.GroupId
@@ -106,6 +167,8 @@ Resources:
           /opt/kafka/bin/kafka-server-start.sh -daemon /opt/kafka/config/sri-server.properties
 
 Outputs:
+  SriVpcId:
+    Value: !Ref SriVpc
   SriKafkaInstanceId:
     Value: !Ref SriKafkaInstance
   SriKafkaBootstrapServers:
