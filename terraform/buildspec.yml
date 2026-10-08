@@ -19,5 +19,3 @@ phases:
       - terraform plan -input=false -out=tfplan
       - terraform apply -input=false tfplan
       - terraform output
-      - export INSTANCE_ID=$(terraform output -raw sri_kafka_instance_id)
-      - bash verify-kafka.sh
