@@ -4,6 +4,7 @@
 *.tfvars
 crash.log
 terraform/.build/
+terraform/tfplan
 
 cdk/node_modules/
 cdk/cdk.out/

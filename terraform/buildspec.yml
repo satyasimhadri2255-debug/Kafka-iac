@@ -1,0 +1,23 @@
+version: 0.2
+
+env:
+  variables:
+    TF_VERSION: "1.16.0"
+
+phases:
+  install:
+    commands:
+      - curl -fsSL -o /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+      - unzip -o -q /tmp/terraform.zip -d /usr/local/bin
+      - terraform version
+  build:
+    commands:
+      - cd "${CODEBUILD_SRC_DIR}/terraform"
+      - terraform init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
+      - terraform fmt -check
+      - terraform validate
+      - terraform plan -input=false -out=tfplan
+      - terraform apply -input=false tfplan
+      - terraform output
+      - export INSTANCE_ID=$(terraform output -raw sri_kafka_instance_id)
+      - bash verify-kafka.sh

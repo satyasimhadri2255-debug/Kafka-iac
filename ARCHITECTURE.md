@@ -16,8 +16,12 @@ Kafka-iac/
 │   ├── assets/bootstrap.sh
 │   ├── assets/lambda/sri_sg_check.py
 │   └── cdk.context.json            cached availability zones
+├── codebuild/                      CI/CD setup (separate Terraform, local state)
+│   ├── storage.tf                  Terraform state bucket
+│   ├── iam.tf                      CodeBuild role
+│   └── codebuild.tf                GitHub token (from Secrets Manager sri-github-token), sri-kafka-deploy project, webhook
 └── terraform/
-    ├── versions.tf                 providers, region us-east-2
+    ├── versions.tf                 providers, region us-east-2, S3 backend
     ├── network.tf                  VPC, public subnet, internet gateway, route table
     ├── kafka.tf                    security group, IAM role, EC2
     ├── secrets.tf                  password, secret, permission to read it
@@ -26,6 +30,8 @@ Kafka-iac/
     ├── reactive_control.tf         remediation role
     ├── conformance_pack.tf         sri-conformance-pack (both rules + remediation)
     ├── outputs.tf
+    ├── buildspec.yml               CodeBuild: init, validate, plan, apply, verify
+    ├── verify-kafka.sh             checks Kafka over SSM after apply
     ├── lambda/sri_sg_check.py
     └── templates/bootstrap.sh.tftpl
 ```
@@ -78,6 +84,12 @@ Only the secret ARN is passed in through user data. The password itself never ap
 4. For `sri-reactive-rule`, the rule passes `restrictedPorts=22,3389,9092,9093`, so the Lambda only flags groups that open one of those ports.
 5. When `sri-reactive-rule` marks a group NON_COMPLIANT, Config runs the AWS runbook with `sri-remediation-role`, up to 3 attempts, 60 seconds apart. The runbook removes the internet-open inbound rules from the group.
 6. The group changes again, Config re-evaluates it, and it comes back COMPLIANT.
+
+## CI/CD
+
+CodeBuild project `sri-kafka-deploy` deploys `terraform/` on every push to `devops`. It runs `terraform/buildspec.yml`: init with the S3 backend, `fmt -check`, `validate`, `plan`, `apply`, and then `verify-kafka.sh`, which runs `kafka-topics.sh --list` on the instance over SSM with the SCRAM credentials. A green build means Kafka is deployed and accepts logins.
+
+The state lives in `s3://sri-kafka-tfstate-<account-id>/kafka/terraform.tfstate` with S3 lock files, so a build and a laptop never write it at the same time. The CodeBuild project itself is created from `codebuild/` with local state, because it has to exist before it can run.
 
 ## Why it is built this way
 
