@@ -56,7 +56,7 @@ resource "aws_instance" "sri_kafka" {
 
   metadata_options {
     http_endpoint = "enabled"
-    http_tokens   = "optional"
+    http_tokens   = "required"
   }
 
   user_data = templatefile("${path.module}/templates/bootstrap.sh.tftpl", {
