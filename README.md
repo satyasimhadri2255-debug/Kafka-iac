@@ -1,4 +1,4 @@
-# Kafka-iac
+# Kafka-iac 
 
 Single-node Apache Kafka on EC2 (no MSK) with AWS Config security controls. Built with Terraform, CloudFormation and CDK. Lab setup, us-east-2.
 
