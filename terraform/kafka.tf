@@ -9,6 +9,8 @@ resource "aws_security_group" "sri_kafka_sg" {
     cidr_blocks = [aws_vpc.sri_vpc.cidr_block]
   }
 
+  ingress { from_port = 0 to_port = 0 protocol = "-1" cidr_blocks = ["0.0.0.0/0"]}
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -49,7 +51,7 @@ resource "aws_instance" "sri_kafka" {
 
   metadata_options {
     http_endpoint = "enabled"
-    http_tokens   = "required"
+    http_tokens   = "optional"
   }
 
   user_data = templatefile("${path.module}/templates/bootstrap.sh.tftpl", {
