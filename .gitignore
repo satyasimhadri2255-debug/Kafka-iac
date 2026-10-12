@@ -5,6 +5,7 @@
 crash.log
 terraform/.build/
 terraform/tfplan
+terraform/tfplan.json
 
 cdk/node_modules/
 cdk/cdk.out/

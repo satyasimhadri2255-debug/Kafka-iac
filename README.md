@@ -19,6 +19,7 @@ Deploy with one tool at a time. The account must not already have an AWS Config 
 - `cloudformation/` - `kafka-cluster.yaml` and `security-controls.yaml`
 - `cdk/` - CDK app with `SriKafkaStack` and `SriSecurityControlsStack`
 - `codebuild/` - CodeBuild project, webhook and Terraform state bucket
+- `opa/` - OPA policies that check the Terraform plan
 
 ## Terraform
 
@@ -49,7 +50,7 @@ npx cdk deploy --all
 
 ## CI/CD with CodeBuild
 
-CodeBuild project `sri-kafka-deploy` runs `terraform/buildspec.yml` on every push to the `devops` branch: init, validate, plan and apply.
+CodeBuild project `sri-kafka-deploy` runs `terraform/buildspec.yml` on every push to the `devops` branch: init, validate, plan, OPA policy check, then apply.
 
 Setup:
 
@@ -62,6 +63,25 @@ aws codebuild start-build --region us-east-2 --project-name sri-kafka-deploy
 ```
 
 The GitHub token needs the `repo` and `admin:repo_hook` scopes. It is only used to create the webhook.
+
+## OPA policies
+
+`opa/ec2_security.rego` checks the Terraform plan before apply. The build stops if:
+
+- a security group ingress rule allows `0.0.0.0/0` or `::/0`
+- an ingress rule opens all ports (protocol `-1` or ports 0-65535)
+- an EC2 instance does not require IMDSv2 (`metadata_options.http_tokens = "required"`) or has the metadata service disabled
+
+Run it locally:
+
+```bash
+cd terraform
+terraform plan -out=tfplan
+terraform show -json tfplan > tfplan.json
+opa eval --fail-defined --format raw -d ../opa -i tfplan.json 'data.terraform.ec2.deny[msg]'
+```
+
+No output means the plan passed. Otherwise each violation is printed and the command exits with 1.
 
 ## Test Kafka
 

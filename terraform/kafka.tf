@@ -47,6 +47,11 @@ resource "aws_instance" "sri_kafka" {
   vpc_security_group_ids = [aws_security_group.sri_kafka_sg.id]
   iam_instance_profile   = aws_iam_instance_profile.sri_kafka_profile.name
 
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
   user_data = templatefile("${path.module}/templates/bootstrap.sh.tftpl", {
     secret_arn = aws_secretsmanager_secret.sri_kafka_secret.arn
   })
