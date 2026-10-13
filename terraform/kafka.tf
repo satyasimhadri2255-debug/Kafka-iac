@@ -57,7 +57,10 @@ resource "aws_instance" "sri_kafka" {
     secret_arn = aws_secretsmanager_secret.sri_kafka_secret.arn
   })
 
-  tags = { Name = "sri-kafka" }
+  tags = {
+    Name        = "sri-kafka"
+    Environment = "dev"
+  }
 
   depends_on = [
     aws_route_table_association.sri_public_rt_assoc,

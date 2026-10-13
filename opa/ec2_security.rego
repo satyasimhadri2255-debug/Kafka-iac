@@ -93,3 +93,20 @@ deny contains msg if {
 	metadata_disabled(rc.change.after)
 	msg := sprintf("%s: instance metadata service is disabled, set metadata_options.http_endpoint = \"enabled\"", [rc.address])
 }
+
+required_tags := {"Environment"}
+
+instance_tags(after) := after.tags_all if {
+	is_object(after.tags_all)
+} else := after.tags if {
+	is_object(after.tags)
+} else := {}
+
+deny contains msg if {
+	some rc in changed
+	rc.type == "aws_instance"
+	tags := instance_tags(rc.change.after)
+	some tag in required_tags
+	trim_space(object.get(tags, tag, "")) == ""
+	msg := sprintf("%s: missing required tag %q", [rc.address, tag])
+}

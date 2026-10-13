@@ -71,6 +71,7 @@ The GitHub token needs the `repo` and `admin:repo_hook` scopes. It is only used 
 - a security group ingress rule allows `0.0.0.0/0` or `::/0`
 - an ingress rule opens all ports (protocol `-1` or ports 0-65535)
 - an EC2 instance does not require IMDSv2 (`metadata_options.http_tokens = "required"`) or has the metadata service disabled
+- an EC2 instance has no `Environment` tag (or it is empty)
 
 Run it locally:
 
