@@ -52,7 +52,7 @@ resource "aws_codebuild_webhook" "sri_kafka_deploy" {
 
     filter {
       type    = "HEAD_REF"
-      pattern = "^refs/heads/devops$"
+      pattern = "^refs/heads/OPA$"
     }
   }
 }
