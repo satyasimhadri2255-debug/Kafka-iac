@@ -22,6 +22,6 @@ phases:
       - terraform validate
       - terraform plan -input=false -out=tfplan
       - terraform show -json tfplan > tfplan.json
-      - opa eval --fail-defined --format raw -d ../opa -i tfplan.json 'data.terraform.ec2.deny[msg]'
+      - opa eval --fail-defined --format raw -d ../opa -i tfplan.json 'data.terraform.deny[msg]'
       - terraform apply -input=false tfplan
       - terraform output

@@ -7,11 +7,14 @@ Single-node Apache Kafka on EC2 (no MSK) with AWS Config security controls. Buil
 - VPC `sri-vpc` with one public subnet
 - EC2 `sri-kafka` running Kafka 4.3.1 (KRaft), port 9092 open to the VPC only
 - Secrets Manager secret with the Kafka admin user and password (SASL/SCRAM login)
-- AWS Config recorder, a Lambda `sri-sg-rule-lambda`, and conformance pack `sri-conformance-pack` with:
+- S3 bucket `sri-kafka-<suffix>` with all public access blocked (Terraform only)
+- AWS Config recorder, a Lambda `sri-sg-rule-lambda`, and conformance pack `sri-conformance-pack` (CloudFormation and CDK only) with:
   - `sri-detective-rule`: reports security groups open to the internet
   - `sri-reactive-rule`: removes internet-open rules on ports 22, 3389, 9092 and 9093
 
 Deploy with one tool at a time. The account must not already have an AWS Config recorder.
+
+Terraform does not create the Config controls. Its plan is checked by the OPA policies instead.
 
 ## Folders
 
@@ -66,12 +69,10 @@ The GitHub token needs the `repo` and `admin:repo_hook` scopes. It is only used 
 
 ## OPA policies
 
-`opa/ec2_security.rego` checks the Terraform plan before apply. The build stops if:
+The policies in `opa/` check the Terraform plan before apply. The build stops if:
 
-- a security group ingress rule allows `0.0.0.0/0` or `::/0`
-- an ingress rule opens all ports (protocol `-1` or ports 0-65535)
-- an EC2 instance does not require IMDSv2 (`metadata_options.http_tokens = "required"`) or has the metadata service disabled
-- an EC2 instance has no `Environment` tag (or it is empty)
+- `s3_public.rego` - an S3 bucket has no `aws_s3_bucket_public_access_block`, a public access block (bucket or account) has any of its four settings off, a bucket ACL is `public-read`, `public-read-write` or `authenticated-read` or grants to AllUsers/AuthenticatedUsers, or a bucket policy allows `*` without a condition
+- `sg_ssh.rego` - a security group ingress rule opens port 22 (or all traffic) to `0.0.0.0/0` or `::/0`
 
 Run it locally:
 
@@ -79,7 +80,7 @@ Run it locally:
 cd terraform
 terraform plan -out=tfplan
 terraform show -json tfplan > tfplan.json
-opa eval --fail-defined --format raw -d ../opa -i tfplan.json 'data.terraform.ec2.deny[msg]'
+opa eval --fail-defined --format raw -d ../opa -i tfplan.json 'data.terraform.deny[msg]'
 ```
 
 No output means the plan passed. Otherwise each violation is printed and the command exits with 1.
@@ -98,7 +99,7 @@ echo hello | /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server $BS --p
 
 ## Test the controls
 
-Open port 9092 to the internet. After a few minutes the reactive rule removes it.
+CloudFormation and CDK only. Open port 9092 to the internet. After a few minutes the reactive rule removes it.
 
 ```bash
 SG=$(aws ec2 describe-security-groups --region us-east-2 --filters Name=group-name,Values=sri-kafka-sg --query 'SecurityGroups[0].GroupId' --output text)

@@ -20,7 +20,7 @@ resource "aws_codebuild_project" "sri_kafka_deploy" {
     buildspec       = "terraform/buildspec.yml"
   }
 
-  source_version = "devops"
+  source_version = "OPA"
 
   artifacts {
     type = "NO_ARTIFACTS"
