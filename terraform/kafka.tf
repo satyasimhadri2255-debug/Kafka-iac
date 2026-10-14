@@ -19,7 +19,7 @@ resource "aws_security_group" "sri_kafka_sg" {
 }
 
 resource "aws_iam_role" "sri_kafka_role" {
-  name = "sri-kafka-role"
+  name = "sri-kafka-role1"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
