@@ -53,7 +53,7 @@ npx cdk deploy --all
 
 ## CI/CD with CodeBuild
 
-CodeBuild project `sri-kafka-deploy` runs `terraform/buildspec.yml` on every push to the `devops` branch: init, validate, plan, OPA policy check, then apply.
+CodeBuild project `sri-kafka-deploy` runs `terraform/buildspec.yml` on every push to the `OPA` branch: init, validate, plan, OPA policy check, then apply.
 
 Setup:
 
