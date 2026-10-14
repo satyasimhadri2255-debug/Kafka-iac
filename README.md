@@ -71,8 +71,8 @@ The GitHub token needs the `repo` and `admin:repo_hook` scopes. It is only used 
 
 The policies in `opa/` check the Terraform plan before apply. The build stops if:
 
-- `s3_public.rego` - an S3 bucket has no `aws_s3_bucket_public_access_block`, a public access block (bucket or account) has any of its four settings off, a bucket ACL is `public-read`, `public-read-write` or `authenticated-read` or grants to AllUsers/AuthenticatedUsers, or a bucket policy allows `*` without a condition
-- `sg_ssh.rego` - a security group ingress rule opens port 22 (or all traffic) to `0.0.0.0/0` or `::/0`
+- `s3_public.rego` - an `aws_s3_bucket_public_access_block` has any of its four settings off, or a bucket ACL is `public-read` or `public-read-write`
+- `sg_ssh.rego` - an `aws_security_group` ingress rule opens port 22, or all traffic, to `0.0.0.0/0`
 
 Run it locally:
 
