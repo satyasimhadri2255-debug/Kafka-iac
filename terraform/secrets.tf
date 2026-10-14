@@ -4,7 +4,7 @@ resource "random_password" "sri_kafka_password" {
 }
 
 resource "aws_secretsmanager_secret" "sri_kafka_secret" {
-  name                    = "sri-kafka-secret"
+  name                    = "sri-kafka-secret1"
   recovery_window_in_days = 0
 }
 
