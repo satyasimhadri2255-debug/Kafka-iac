@@ -37,7 +37,7 @@ resource "aws_iam_role_policy_attachment" "sri_kafka_ssm" {
 }
 
 resource "aws_iam_instance_profile" "sri_kafka_profile" {
-  name = "sri-kafka-profile"
+  name = "sri-kafka-profile1"
   role = aws_iam_role.sri_kafka_role.name
 }
 
